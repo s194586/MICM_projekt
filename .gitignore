@@ -1,0 +1,10 @@
+venv_projektmicm/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.env
+.DS_Store
+.vscode/
+*.log
+blobby-face-controller/models/*.pkl
