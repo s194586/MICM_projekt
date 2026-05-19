@@ -65,6 +65,25 @@ pip install -r requirements.txt
 
 Przed każdym uruchomieniem skryptów wejdź do katalogu `blobby-face-controller` i aktywuj środowisko komendą `source ../venv_projektmicm/bin/activate`.
 
+## Troubleshooting
+
+Jeśli po uruchomieniu `python test_camera.py` pojawia się błąd `AttributeError: module 'mediapipe' has no attribute 'solutions'`, to zwykle oznacza, że w środowisku jest zainstalowana wersja MediaPipe niezgodna z legacy API używanym przez ten projekt. Kod korzysta z `mp.solutions.face_mesh`, więc wymagamy wersji kompatybilnej z tym API: `mediapipe==0.10.21`.
+
+Naprawa środowiska:
+
+```bash
+pip uninstall mediapipe -y
+pip install mediapipe==0.10.21
+```
+
+Weryfikacja po instalacji:
+
+```bash
+python -c "import mediapipe as mp; print(mp.__version__); print(hasattr(mp, 'solutions'))"
+```
+
+Oczekiwany wynik to `0.10.21` oraz `True`.
+
 ## Uruchomienie
 
 Test kamery:

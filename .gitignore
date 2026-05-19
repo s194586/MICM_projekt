@@ -1,4 +1,7 @@
+MICM projekt/
 venv_projektmicm/
+.venv/
+venv/
 __pycache__/
 *.pyc
 *.pyo
