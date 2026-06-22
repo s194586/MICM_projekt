@@ -324,6 +324,15 @@ Przed turniejem sprawdź i dostosuj w `config.py`:
 
 Najważniejsze jest dobranie progów do konkretnej kamerki, oświetlenia i odległości od laptopa. `HEAD_YAW_ENTER_THRESHOLD` określa mocniejsze wychylenie potrzebne do rozpoczęcia ruchu, a mniejszy `HEAD_YAW_EXIT_THRESHOLD` utrzymuje kierunek do powrotu głowy bliżej środka. Ta histereza ogranicza migotanie między ruchem i idle.
 
+Jeżeli `A`/`D` aktywuje się zbyt łatwo, zwiększ `HEAD_YAW_ENTER_THRESHOLD`. Jeżeli trudno wrócić do idle, zwiększ lub dostrój `HEAD_YAW_EXIT_THRESHOLD`. Stabilniejsze ustawienia startowe dla obecnej, znormalizowanej skali to:
+
+```python
+HEAD_YAW_ENTER_THRESHOLD = 0.085
+HEAD_YAW_EXIT_THRESHOLD = 0.045
+```
+
+W tym projekcie `head_yaw` nie jest podawany w stopniach, dlatego nie należy wpisywać tu wartości `18.0` i `10.0`. Aktualną wartość `head_yaw` można obserwować w overlayu obu kontrolerów.
+
 Jeśli neutralna twarz uruchamia skok, zwiększ `SMILE_THRESHOLD`. Jeśli wyraźny uśmiech nie uruchamia skoku, zmniejsz go nieznacznie i obserwuj `smile_score` w overlayu.
 
 ## Stabilność
