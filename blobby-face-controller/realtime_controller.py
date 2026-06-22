@@ -362,6 +362,7 @@ def main() -> int:
                     draw_face_box(frame, player2, "Player 2 - jump/bonus", (80, 255, 80))
 
                 if player1 is not None:
+                    # Movement owns only A/D; it never releases jump or bonus keys.
                     p1_features = extract_feature_dict(player1)
                     p1_head_yaw = p1_features["head_yaw"]
                     raw_movement = movement_from_head_yaw(p1_head_yaw, movement_smoother.stable)
@@ -372,6 +373,7 @@ def main() -> int:
                     movement_smoother.reset()
 
                 if player2 is not None:
+                    # Jump hold and bonus tap are independent from the movement hold.
                     p2_features = extract_feature_dict(player2)
                     p2_feature_vector = extract_features(player2)
                     p2_smile_score = estimate_smile_score(p2_features)

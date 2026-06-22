@@ -342,6 +342,7 @@ def main() -> int:
                     head_yaw = feature_dict["head_yaw"]
                     smile_score = estimate_smile_score(feature_dict)
 
+                    # Movement owns only A/D; it never releases jump or bonus keys.
                     movement_target = movement_from_head_yaw(head_yaw, movement_smoother.stable)
                     movement_action = movement_smoother.update(movement_target)
                     keyboard.set_movement(movement_action, left_key, right_key)
@@ -349,6 +350,7 @@ def main() -> int:
                     jump_key_held = jump_hold.update(smile_score >= config.SMILE_THRESHOLD)
                     keyboard.set_hold(jump_key, jump_key_held)
 
+                    # Bonus is an independent Space tap while A/D and W stay held.
                     if bonus_model.model is not None:
                         try:
                             bonus_raw, bonus_probability = predict_bonus(bonus_model.model, feature_vector)

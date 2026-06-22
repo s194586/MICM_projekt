@@ -252,7 +252,7 @@ Otwórz Notatnik albo inne pole tekstowe, uruchom poniższe polecenie i w ciągu
 python key_test.py
 ```
 
-Skrypt kolejno wyśle skonfigurowane klawisze ruchu, skoku i bonusu. Przy ustawieniach domyślnych oczekiwany tekst to `adw` oraz spacja. Jeżeli klawisze działają w Notatniku, ale nie w grze, kliknij ponownie okno Blobby Online — przeglądarka musi mieć focus.
+Skrypt sprawdzi kolejno kombinacje `A+W`, `D+W`, `A+Space`, `D+Space`, `A+W+Space` i `D+W+Space`. Każdy test jest opisany w terminalu. Jeżeli kombinacje działają w Notatniku, ale nie w grze, kliknij ponownie okno Blobby Online — przeglądarka musi mieć focus.
 
 ## Jak odpalić grę
 
@@ -288,6 +288,8 @@ Sterowanie gestami:
 - Player 2: pochylenie głowy w dół = krótki TAP `Space`, klasyfikowany przez model SVM.
 
 Ruch i skok działają jak normalnie trzymane klawisze, a nie seria naciśnięć co klatkę. Bonus pozostaje pojedynczym tapnięciem z cooldownem. Jeśli `Space` nie działa w grze, najpierw kliknij jej okno, aby odzyskało focus.
+
+Kanały sterowania są niezależne: można jednocześnie trzymać jeden kierunek (`A` albo `D`) i skok (`W`), a w tym czasie wykonać tap `Space`. Kontroler zawsze zwalnia poprzedni kierunek przed wciśnięciem przeciwnego, więc `A` i `D` nie są trzymane razem.
 
 ## Cechy
 
