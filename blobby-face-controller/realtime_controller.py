@@ -11,7 +11,7 @@ import mediapipe as mp
 import numpy as np
 
 import config
-from feature_extraction import extract_feature_dict, extract_features, face_bbox, sort_faces_left_to_right
+from feature_extraction import FEATURE_NAMES, extract_feature_dict, extract_features, face_bbox, sort_faces_left_to_right
 
 try:
     from pynput.keyboard import Controller, Key
@@ -178,12 +178,17 @@ class BonusModel:
 
 def load_bonus_model() -> BonusModel:
     if not config.MODEL_PATH.exists():
-        return BonusModel(None, f"missing model: {config.MODEL_PATH.name}")
+        return BonusModel(None, f"model not loaded: missing {config.MODEL_PATH.name}")
     try:
         payload = joblib.load(config.MODEL_PATH)
         model = payload.get("model") if isinstance(payload, dict) else payload
     except Exception as exc:
-        return BonusModel(None, f"model load error: {exc}")
+        return BonusModel(None, f"model not loaded: {exc}")
+
+    if model is None:
+        return BonusModel(None, "model not loaded: invalid model file")
+    if isinstance(payload, dict) and payload.get("feature_names") != FEATURE_NAMES:
+        return BonusModel(None, "model not loaded: feature schema mismatch")
     return BonusModel(model, "model OK")
 
 

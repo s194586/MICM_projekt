@@ -23,6 +23,16 @@ def ensure_dataset_file() -> None:
         with config.DATASET_PATH.open("w", newline="", encoding="utf-8") as file:
             writer = csv.writer(file)
             writer.writerow(CSV_COLUMNS)
+        return
+
+    with config.DATASET_PATH.open("r", newline="", encoding="utf-8") as file:
+        header = next(csv.reader(file), [])
+    if header != CSV_COLUMNS:
+        raise ValueError(
+            f"Dataset header does not match the current feature schema: {config.DATASET_PATH}\n"
+            f"Expected: {CSV_COLUMNS}\n"
+            f"Found:    {header}"
+        )
 
 
 def load_counts() -> Counter:
@@ -62,8 +72,11 @@ def put_lines(frame, lines: list[tuple[str, tuple[int, int, int]]]) -> None:
 
 
 def main() -> int:
-    ensure_dataset_file()
-    counts = load_counts()
+    try:
+        counts = load_counts()
+    except ValueError as exc:
+        print(f"ERROR: {exc}")
+        return 1
 
     cap = cv2.VideoCapture(config.CAMERA_INDEX)
     if not cap.isOpened():
@@ -124,15 +137,16 @@ def main() -> int:
             prev_time = now
 
             status_color = (80, 255, 80) if player2_detected else (0, 180, 255)
-            status_text = "Player 2 detected" if player2_detected else "Player 2 missing; using visible face only for solo collection"
+            status_text = "Dataset source: Player 2 (right face)" if player2_detected else "Dataset source: single-player fallback"
             if player2_face is None:
-                status_text = "No face detected; sample disabled"
+                status_text = "WARNING: no face detected; sample disabled"
                 status_color = (0, 80, 255)
 
             put_lines(
                 frame,
                 [
                     (f"FPS: {fps:.1f}", (255, 255, 255)),
+                    (f"Faces detected: {len(faces)}", (255, 255, 255)),
                     (status_text, status_color),
                     (f"Current class: {current_label_name}", (255, 255, 255)),
                     (f"neutral: {counts[config.LABEL_NEUTRAL]}", (255, 255, 255)),

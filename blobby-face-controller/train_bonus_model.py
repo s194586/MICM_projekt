@@ -6,6 +6,7 @@ from datetime import datetime
 
 import joblib
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
 from sklearn.metrics import (
     accuracy_score,
@@ -27,7 +28,7 @@ from feature_extraction import FEATURE_NAMES
 MIN_SAMPLES_PER_CLASS = 50
 
 
-def normalize_labels(series: pd.Series) -> pd.Series:
+def normalize_labels(series: pd.Series) -> pd.Series | None:
     mapping = {
         "neutral": config.LABEL_NEUTRAL,
         "bonus_gesture": config.LABEL_BONUS,
@@ -36,7 +37,12 @@ def normalize_labels(series: pd.Series) -> pd.Series:
         0: config.LABEL_NEUTRAL,
         1: config.LABEL_BONUS,
     }
-    return series.map(lambda value: mapping.get(value, mapping.get(str(value).strip(), value))).astype(int)
+    normalized = series.map(lambda value: mapping.get(value, mapping.get(str(value).strip())))
+    if normalized.isna().any():
+        invalid = sorted(series[normalized.isna()].astype(str).unique().tolist())
+        print(f"ERROR: Dataset contains unsupported labels: {invalid}")
+        return None
+    return normalized.astype(int)
 
 
 def load_dataset() -> tuple[pd.DataFrame, pd.Series] | None:
@@ -62,7 +68,17 @@ def load_dataset() -> tuple[pd.DataFrame, pd.Series] | None:
         return None
 
     labels = normalize_labels(df["label"])
-    features = df[FEATURE_NAMES].astype(float)
+    if labels is None:
+        return None
+
+    try:
+        features = df[FEATURE_NAMES].astype(float)
+    except (TypeError, ValueError) as exc:
+        print(f"ERROR: Dataset contains non-numeric feature values: {exc}")
+        return None
+    if not np.isfinite(features.to_numpy()).all():
+        print("ERROR: Dataset contains infinite feature values.")
+        return None
     return features, labels
 
 
@@ -72,7 +88,8 @@ def check_sample_counts(labels: pd.Series) -> bool:
     bonus_count = counts.get(config.LABEL_BONUS, 0)
     print(f"Samples: neutral={neutral_count}, bonus_gesture={bonus_count}")
     if neutral_count < MIN_SAMPLES_PER_CLASS or bonus_count < MIN_SAMPLES_PER_CLASS:
-        print(f"ERROR: Need at least {MIN_SAMPLES_PER_CLASS} samples per class.")
+        print(f"WARNING: Need at least {MIN_SAMPLES_PER_CLASS} samples per class.")
+        print("Training stopped. Collect more samples with: python collect_dataset.py")
         return False
     return True
 

@@ -84,6 +84,44 @@ python -c "import mediapipe as mp; print(mp.__version__); print(hasattr(mp, 'sol
 
 Oczekiwany wynik to `0.10.21` oraz `True`.
 
+## Aktualny workflow
+
+Wszystkie polecenia uruchamiaj lokalnie z katalogu `blobby-face-controller`:
+
+1. Sprawdź kamerę i przypisanie graczy:
+
+   ```bash
+   python test_camera.py
+   ```
+
+2. Zbierz własny dataset gestu bonusowego:
+
+   ```bash
+   python collect_dataset.py
+   ```
+
+   Zbierz minimum 50 próbek `neutral` i 50 próbek `bonus_gesture`; zalecane jest 100-150 próbek na klasę.
+
+3. Wytrenuj i zweryfikuj model:
+
+   ```bash
+   python train_bonus_model.py
+   ```
+
+   Sprawdź w `reports/validation_metrics.txt`, czy `bonus_precision` jest większe niż `0.85`.
+
+4. Uruchom lokalny kontroler:
+
+   ```bash
+   python realtime_controller.py
+   ```
+
+5. Dopiero po przejściu tych kroków wykonaj test z Blobby Online.
+
+Plik `data/gestures.csv` zawiera dane treningowe: liczbowe cechy wyliczone z landmarków MediaPipe i etykiety klas. Nie jest finalnym modelem. Plik `models/bonus_model.pkl` jest wytrenowanym modelem SVM ładowanym przez `realtime_controller.py`.
+
+Colab lub Jupyter może służyć do analizy CSV i treningu modelu. Finalne sterowanie gry powinno jednak działać lokalnie, ponieważ wymaga kamery, overlayu OpenCV i symulacji klawiatury.
+
 ## Uruchomienie
 
 Test kamery:
