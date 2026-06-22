@@ -15,6 +15,10 @@ FRAME_WIDTH = 960
 FRAME_HEIGHT = 540
 MAX_NUM_FACES = 2
 
+# Use one detected face as Player 2 for local jump/bonus testing.
+SOLO_TEST_MODE = True
+SOLO_TEST_ROLE = "player2"
+
 # Player 1 movement mode. Keep "head_yaw" as the default ergonomic option.
 MOVE_CONTROL_MODE = "head_yaw"
 # Experimental only. Eye/gaze control is tiring because players must watch the ball.

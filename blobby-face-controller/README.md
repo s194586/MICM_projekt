@@ -10,7 +10,7 @@ Lokalny kontroler do Blobby Volley Online sterowany przez dwie osoby widoczne w 
 - Gracz 2 steruje skokiem uśmiechem wykrywanym regułowo przez `smile_score`.
 - Gracz 2 aktywuje bonus lekkim pochyleniem głowy w dół (krótkie skinienie).
 - Bonus jest wykrywany przez model ML, a nie przez same reguły if/else.
-- Gdy system widzi mniej niż dwie twarze w trybie gry, puszcza klawisze i czeka.
+- W normalnym trybie mniej niż dwie twarze powodują zwolnienie klawiszy; tryb solo może użyć jednej twarzy jako Player 2.
 
 ## Dlaczego tak
 
@@ -204,6 +204,21 @@ Skok nie jest trenowany: działa regułowo na podstawie `smile_score`. Bonus jes
 
 Po tej zmianie ergonomii trzeba zebrać dataset od nowa i ponownie wytrenować model. Kontroler odrzuca starsze modele, które nie mają oznaczenia gestu `head_down_nod`.
 
+## Solo test mode
+
+Do testowania Playera 2 samemu ustaw w `config.py`:
+
+```python
+SOLO_TEST_MODE = True
+SOLO_TEST_ROLE = "player2"
+```
+
+Gdy kamera wykryje dokładnie jedną twarz, kontroler potraktuje ją jako Player 2. Pozwala to sprawdzić uśmiech jako skok oraz pochylenie głowy w dół jako bonus rozpoznawany przez model. Player 1 pozostaje nieaktywny, a jego klawisze ruchu są zwolnione.
+
+Klawisz `t` przełącza tryb solo podczas działania kontrolera. Ustawienie z `config.py` określa stan początkowy po każdym uruchomieniu.
+
+Na labach, gdy kamera wykryje dwie twarze, tryb solo jest automatycznie pomijany: lewa osoba zostaje Player 1, a prawa Player 2.
+
 ## Jak odpalić grę
 
 1. Wejdź na https://www.blobby-online.com/de
@@ -281,5 +296,6 @@ Kontroler używa smoothingu i debounce:
 - akcja ruchu musi utrzymać się przez kilka klatek,
 - skok jest krótkim tapnięciem z cooldownem,
 - bonus wymaga kilku kolejnych klatek klasyfikacji ML i ma cooldown,
-- przy braku dwóch twarzy program puszcza wszystkie klawisze,
+- w normalnym trybie przy braku dwóch twarzy program puszcza wszystkie klawisze,
+- w trybie solo jedna twarz steruje wyłącznie akcjami Playera 2,
 - przy wyjściu `q` program zawsze puszcza klawisze.

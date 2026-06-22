@@ -234,6 +234,15 @@ def is_jump_gesture(features: dict[str, float]) -> bool:
     return estimate_smile_score(features) > config.SMILE_THRESHOLD
 
 
+def assign_player_faces(faces: list, solo_test_mode: bool) -> tuple[object | None, object | None, bool]:
+    """Return Player 1, Player 2 and whether single-face solo fallback is active."""
+    if len(faces) >= 2:
+        return faces[0], faces[1], False
+    if len(faces) == 1 and solo_test_mode and config.SOLO_TEST_ROLE == "player2":
+        return None, faces[0], True
+    return None, None, False
+
+
 def predict_bonus(model, feature_vector: np.ndarray) -> tuple[bool, float | None]:
     vector = feature_vector.reshape(1, -1)
     if hasattr(model, "predict_proba"):
@@ -271,6 +280,7 @@ def main() -> int:
     jump_display_until = 0.0
     bonus_display_until = 0.0
     model_status = bonus_model.status
+    solo_test_mode = config.SOLO_TEST_MODE
 
     try:
         with mp_face_mesh.FaceMesh(
@@ -294,6 +304,7 @@ def main() -> int:
                 rgb.flags.writeable = False
                 results = face_mesh.process(rgb)
                 faces = sort_faces_left_to_right(results.multi_face_landmarks or [])
+                player1, player2, solo_active = assign_player_faces(faces, solo_test_mode)
 
                 p1_status = "missing"
                 p2_status = "missing"
@@ -305,24 +316,31 @@ def main() -> int:
                 p2_head_pitch = None
                 bonus_probability = None
 
-                if len(faces) >= 2:
-                    player1, player2 = faces[0], faces[1]
+                if solo_active:
+                    p1_status = "missing / solo inactive"
+                    p2_status = "solo fallback"
+                    draw_face_box(frame, player2, "Player 2 - SOLO TEST", (80, 255, 80))
+                elif player1 is not None and player2 is not None:
                     p1_status = "detected"
                     p2_status = "detected"
                     draw_face_box(frame, player1, "Player 1 - movement", (0, 220, 255))
                     draw_face_box(frame, player2, "Player 2 - jump/bonus", (80, 255, 80))
 
+                if player1 is not None:
                     p1_features = extract_feature_dict(player1)
-                    p2_features = extract_feature_dict(player2)
-                    p2_feature_vector = extract_features(player2)
                     p1_head_yaw = p1_features["head_yaw"]
-                    p2_smile_score = estimate_smile_score(p2_features)
-                    p2_head_pitch = p2_features["head_pitch"]
-
                     raw_movement = movement_from_head_yaw(p1_head_yaw)
                     p1_action = movement_smoother.update(raw_movement)
                     keyboard.set_movement(p1_action)
+                else:
+                    keyboard.set_movement(IDLE)
+                    movement_smoother.reset()
 
+                if player2 is not None:
+                    p2_features = extract_feature_dict(player2)
+                    p2_feature_vector = extract_features(player2)
+                    p2_smile_score = estimate_smile_score(p2_features)
+                    p2_head_pitch = p2_features["head_pitch"]
                     jump_raw = is_jump_gesture(p2_features)
                     if jump_debouncer.update(jump_raw, now):
                         keyboard.tap(config.JUMP_KEY, now)
@@ -350,7 +368,6 @@ def main() -> int:
                         bonus_debouncer.reset()
                 else:
                     keyboard.release_all()
-                    movement_smoother.reset()
                     jump_debouncer.reset()
                     bonus_debouncer.reset()
                     if len(faces) == 1:
@@ -361,7 +378,10 @@ def main() -> int:
 
                 warning = ""
                 warning_color = (255, 255, 255)
-                if len(faces) == 1:
+                if solo_active:
+                    warning = "SOLO TEST MODE: single face used as Player 2"
+                    warning_color = (80, 255, 80)
+                elif len(faces) == 1:
                     warning = "Only one player detected - keys released"
                     warning_color = (0, 180, 255)
                 elif len(faces) == 0:
@@ -385,21 +405,33 @@ def main() -> int:
                         (f"Player 1 status: {p1_status}", (0, 220, 255) if p1_status == "detected" else (0, 180, 255)),
                         (f"Player 1 action: {p1_action}", (0, 220, 255)),
                         (f"Player 1 head_yaw: {p1_yaw_text}", (0, 220, 255)),
-                        (f"Player 2 status: {p2_status}", (80, 255, 80) if p2_status == "detected" else (0, 180, 255)),
+                        (
+                            f"Player 2 status: {p2_status}",
+                            (80, 255, 80) if p2_status in ("detected", "solo fallback") else (0, 180, 255),
+                        ),
                         (f"Player 2 action: {p2_action}", (80, 255, 80)),
                         (f"Player 2 smile_score: {p2_smile_text}", (80, 255, 80)),
                         (f"Player 2 head_pitch: {p2_pitch_text}", (80, 255, 80)),
                         (f"Bonus status: {bonus_status} | proba: {bonus_prob_text}", (255, 220, 80)),
                         (f"Model loaded: {model_loaded_text} | {model_status}", (230, 230, 230)),
                         (f"Keyboard: {keyboard.status()}", (230, 230, 230)),
-                        ("q = quit", (230, 230, 230)),
+                        ("t = toggle solo test | q = quit", (230, 230, 230)),
                     ]
                 )
                 put_lines(frame, lines)
 
                 cv2.imshow("Blobby Face Controller - realtime", frame)
-                if cv2.waitKey(1) & 0xFF == ord("q"):
+                key = cv2.waitKey(1) & 0xFF
+                if key == ord("q"):
                     break
+                if key == ord("t"):
+                    solo_test_mode = not solo_test_mode
+                    print(f"Solo test mode: {'ON' if solo_test_mode else 'OFF'}")
+                    if not solo_test_mode:
+                        keyboard.release_all()
+                        movement_smoother.reset()
+                        jump_debouncer.reset()
+                        bonus_debouncer.reset()
 
     finally:
         keyboard.release_all()
