@@ -219,6 +219,31 @@ Klawisz `t` przełącza tryb solo podczas działania kontrolera. Ustawienie z `c
 
 Na labach, gdy kamera wykryje dwie twarze, tryb solo jest automatycznie pomijany: lewa osoba zostaje Player 1, a prawa Player 2.
 
+## Domowy tryb solo — solo_face_play.py
+
+To nie jest główny tryb projektowy na laby. `solo_face_play.py` jest osobnym, eksperymentalnym skryptem do grania samemu twarzą przeciwko koledze online. Jedna twarz steruje całym naszym Blobbem, a `realtime_controller.py` zachowuje standardowy podział między dwie osoby.
+
+Uruchomienie:
+
+```bash
+python solo_face_play.py
+```
+
+Sterowanie:
+
+- głowa w lewo/prawo = ruch,
+- uśmiech = skok,
+- głowa w dół = bonus rozpoznawany przez model SVM.
+
+Przed grą:
+
+1. Otwórz Blobby Online w przeglądarce.
+2. Kliknij w okno gry, żeby przeglądarka miała focus.
+3. Uruchom lub pozostaw uruchomiony `solo_face_play.py`.
+4. Jeśli okno OpenCV przejęło focus albo gra nie reaguje, kliknij ponownie w okno gry.
+
+Kolega gra na swoim komputerze normalnie klawiaturą jako drugi gracz online. Do testowania wysyłanych klawiszy można użyć Notatnika: obrót głowy powinien wpisywać `A`/`D`, uśmiech `W`, a gest bonusu spację — zgodnie z domyślnymi wartościami w `config.py`.
+
 ## Jak odpalić grę
 
 1. Wejdź na https://www.blobby-online.com/de
