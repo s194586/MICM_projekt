@@ -19,14 +19,14 @@ from feature_extraction import (
     face_bbox,
     sort_faces_left_to_right,
 )
+from keyboard_utils import resolve_key, tap_key
 
 try:
-    from pynput.keyboard import Controller, Key
+    from pynput.keyboard import Controller
 
     PYNPUT_IMPORT_ERROR = None
 except Exception as exc:  # pragma: no cover - depends on local desktop/session.
     Controller = None
-    Key = None
     PYNPUT_IMPORT_ERROR = exc
 
 
@@ -62,7 +62,7 @@ class StableAction:
 
 
 class GestureDebouncer:
-    """Debounce one-shot gestures such as jump and bonus."""
+    """Debounce the one-shot bonus gesture."""
 
     def __init__(self, confirm_frames: int, cooldown_seconds: float):
         self.confirm_frames = max(1, confirm_frames)
@@ -97,77 +97,94 @@ class GestureDebouncer:
         self.armed = True
 
 
+class ConfirmedHold:
+    """Hold an action after confirmation and release it immediately when false."""
+
+    def __init__(self, confirm_frames: int):
+        self.confirm_frames = max(1, confirm_frames)
+        self.true_frames = 0
+        self.held = False
+
+    def update(self, is_active: bool) -> bool:
+        if not is_active:
+            self.true_frames = 0
+            self.held = False
+            return False
+        self.true_frames += 1
+        if self.true_frames >= self.confirm_frames:
+            self.held = True
+        return self.held
+
+    def reset(self) -> None:
+        self.true_frames = 0
+        self.held = False
+
+
 class KeyboardManager:
     """Stateful keyboard output that avoids spamming repeated keyDown events."""
 
     def __init__(self):
-        self.enabled = Controller is not None and PYNPUT_IMPORT_ERROR is None
-        self.controller = Controller() if self.enabled else None
-        self.held_keys: set[str] = set()
-        self.tap_release_at: dict[str, float] = {}
+        self.controller = None
+        self.enabled = False
+        self.held_keys: set[object] = set()
         self.error = str(PYNPUT_IMPORT_ERROR) if PYNPUT_IMPORT_ERROR else ""
 
-    def parse_key(self, key_name: str):
-        if Key is not None and hasattr(Key, key_name):
-            return getattr(Key, key_name)
-        return key_name
+        if Controller is not None and PYNPUT_IMPORT_ERROR is None:
+            try:
+                self.controller = Controller()
+                self.enabled = True
+            except Exception as exc:  # pragma: no cover - desktop dependent.
+                self.error = str(exc)
 
-    def press(self, key_name: str) -> None:
+    def press(self, key) -> None:
         if not self.enabled or self.controller is None:
             return
         try:
-            self.controller.press(self.parse_key(key_name))
+            self.controller.press(key)
         except Exception as exc:
             self.enabled = False
             self.error = str(exc)
 
-    def release(self, key_name: str) -> None:
-        if not self.enabled or self.controller is None:
+    def release(self, key) -> None:
+        if self.controller is None:
             return
         try:
-            self.controller.release(self.parse_key(key_name))
+            self.controller.release(key)
         except Exception as exc:
             self.enabled = False
             self.error = str(exc)
 
-    def hold(self, key_name: str) -> None:
-        if key_name not in self.held_keys:
-            self.press(key_name)
-            self.held_keys.add(key_name)
+    def hold(self, key) -> None:
+        if key not in self.held_keys:
+            self.press(key)
+            self.held_keys.add(key)
 
-    def release_hold(self, key_name: str) -> None:
-        if key_name in self.held_keys:
-            self.held_keys.remove(key_name)
-            if key_name not in self.tap_release_at:
-                self.release(key_name)
+    def release_hold(self, key) -> None:
+        if key in self.held_keys:
+            self.held_keys.remove(key)
+            self.release(key)
 
-    def set_movement(self, action: str) -> None:
+    def set_movement(self, action: str, left_key, right_key) -> None:
         if action == LEFT:
-            self.release_hold(config.MOVE_RIGHT_KEY)
-            self.hold(config.MOVE_LEFT_KEY)
+            self.release_hold(right_key)
+            self.hold(left_key)
         elif action == RIGHT:
-            self.release_hold(config.MOVE_LEFT_KEY)
-            self.hold(config.MOVE_RIGHT_KEY)
+            self.release_hold(left_key)
+            self.hold(right_key)
         else:
-            self.release_hold(config.MOVE_LEFT_KEY)
-            self.release_hold(config.MOVE_RIGHT_KEY)
+            self.release_hold(left_key)
+            self.release_hold(right_key)
 
-    def tap(self, key_name: str, now: float, duration: float = config.KEY_TAP_SECONDS) -> None:
-        self.press(key_name)
-        self.tap_release_at[key_name] = max(self.tap_release_at.get(key_name, 0.0), now + duration)
-
-    def update_taps(self, now: float) -> None:
-        for key_name, release_time in list(self.tap_release_at.items()):
-            if now >= release_time:
-                del self.tap_release_at[key_name]
-                if key_name not in self.held_keys:
-                    self.release(key_name)
+    def set_hold(self, key, should_hold: bool) -> None:
+        if should_hold:
+            self.hold(key)
+        else:
+            self.release_hold(key)
 
     def release_all(self) -> None:
-        for key_name in set(self.held_keys) | set(self.tap_release_at):
-            self.release(key_name)
+        for key in set(self.held_keys):
+            self.release(key)
         self.held_keys.clear()
-        self.tap_release_at.clear()
 
     def status(self) -> str:
         if self.enabled:
@@ -219,10 +236,26 @@ def put_lines(frame, lines: list[tuple[str, tuple[int, int, int]]]) -> None:
         y += 25
 
 
-def movement_from_head_yaw(head_yaw: float) -> str:
-    if head_yaw < config.HEAD_YAW_LEFT_THRESHOLD:
+def movement_from_head_yaw(head_yaw: float, current_move: str = IDLE) -> str:
+    """Return movement with separate enter and exit thresholds (hysteresis)."""
+    enter = config.HEAD_YAW_ENTER_THRESHOLD
+    exit_threshold = config.HEAD_YAW_EXIT_THRESHOLD
+
+    if current_move == LEFT:
+        if head_yaw > enter:
+            return RIGHT
+        if head_yaw > -exit_threshold:
+            return IDLE
         return LEFT
-    if head_yaw > config.HEAD_YAW_RIGHT_THRESHOLD:
+    if current_move == RIGHT:
+        if head_yaw < -enter:
+            return LEFT
+        if head_yaw < exit_threshold:
+            return IDLE
+        return RIGHT
+    if head_yaw < -enter:
+        return LEFT
+    if head_yaw > enter:
         return RIGHT
     return IDLE
 
@@ -230,8 +263,8 @@ def movement_from_head_yaw(head_yaw: float) -> str:
 def is_jump_gesture(features: dict[str, float]) -> bool:
     """Detect Player 2 jump without involving the trained bonus model."""
     if config.JUMP_MODE == "mouth_open":
-        return features["mouth_open_ratio"] > config.MOUTH_OPEN_THRESHOLD
-    return estimate_smile_score(features) > config.SMILE_THRESHOLD
+        return features["mouth_open_ratio"] >= config.MOUTH_OPEN_THRESHOLD
+    return estimate_smile_score(features) >= config.SMILE_THRESHOLD
 
 
 def assign_player_faces(faces: list, solo_test_mode: bool) -> tuple[object | None, object | None, bool]:
@@ -268,16 +301,19 @@ def main() -> int:
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, config.FRAME_WIDTH)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, config.FRAME_HEIGHT)
 
+    left_key = resolve_key(config.MOVE_LEFT_KEY)
+    right_key = resolve_key(config.MOVE_RIGHT_KEY)
+    jump_key = resolve_key(config.JUMP_KEY)
+    bonus_key = resolve_key(config.BONUS_KEY)
     keyboard = KeyboardManager()
     bonus_model = load_bonus_model()
     movement_smoother = StableAction(config.ACTION_CONFIRM_FRAMES)
-    jump_debouncer = GestureDebouncer(config.JUMP_CONFIRM_FRAMES, config.JUMP_COOLDOWN_SECONDS)
+    jump_hold = ConfirmedHold(config.JUMP_CONFIRM_FRAMES)
     bonus_debouncer = GestureDebouncer(config.BONUS_CONFIRM_FRAMES, config.BONUS_COOLDOWN_SECONDS)
 
     mp_face_mesh = mp.solutions.face_mesh
     prev_time = time.perf_counter()
     fps = 0.0
-    jump_display_until = 0.0
     bonus_display_until = 0.0
     model_status = bonus_model.status
     solo_test_mode = config.SOLO_TEST_MODE
@@ -297,7 +333,6 @@ def main() -> int:
                     break
 
                 now = time.perf_counter()
-                keyboard.update_taps(now)
 
                 frame = cv2.flip(frame, 1)
                 rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -309,7 +344,7 @@ def main() -> int:
                 p1_status = "missing"
                 p2_status = "missing"
                 p1_action = IDLE
-                p2_action = IDLE
+                jump_key_held = False
                 bonus_status = "MODEL NOT LOADED" if bonus_model.model is None else "READY"
                 p1_head_yaw = None
                 p2_smile_score = None
@@ -329,11 +364,11 @@ def main() -> int:
                 if player1 is not None:
                     p1_features = extract_feature_dict(player1)
                     p1_head_yaw = p1_features["head_yaw"]
-                    raw_movement = movement_from_head_yaw(p1_head_yaw)
+                    raw_movement = movement_from_head_yaw(p1_head_yaw, movement_smoother.stable)
                     p1_action = movement_smoother.update(raw_movement)
-                    keyboard.set_movement(p1_action)
+                    keyboard.set_movement(p1_action, left_key, right_key)
                 else:
-                    keyboard.set_movement(IDLE)
+                    keyboard.set_movement(IDLE, left_key, right_key)
                     movement_smoother.reset()
 
                 if player2 is not None:
@@ -342,16 +377,14 @@ def main() -> int:
                     p2_smile_score = estimate_smile_score(p2_features)
                     p2_head_pitch = p2_features["head_pitch"]
                     jump_raw = is_jump_gesture(p2_features)
-                    if jump_debouncer.update(jump_raw, now):
-                        keyboard.tap(config.JUMP_KEY, now)
-                        jump_display_until = now + 0.25
-                    p2_action = "JUMP" if now < jump_display_until else IDLE
+                    jump_key_held = jump_hold.update(jump_raw)
+                    keyboard.set_hold(jump_key, jump_key_held)
 
                     if bonus_model.model is not None:
                         try:
                             bonus_raw, bonus_probability = predict_bonus(bonus_model.model, p2_feature_vector)
                             if bonus_debouncer.update(bonus_raw, now):
-                                keyboard.tap(config.BONUS_KEY, now)
+                                tap_key(keyboard, bonus_key, duration=config.KEY_TAP_SECONDS)
                                 bonus_display_until = now + 0.35
                             cooldown = bonus_debouncer.cooldown_left(now)
                             if now < bonus_display_until:
@@ -368,7 +401,9 @@ def main() -> int:
                         bonus_debouncer.reset()
                 else:
                     keyboard.release_all()
-                    jump_debouncer.reset()
+                    keyboard.release(jump_key)
+                    keyboard.release(bonus_key)
+                    jump_hold.reset()
                     bonus_debouncer.reset()
                     if len(faces) == 1:
                         draw_face_box(frame, faces[0], "Only one player detected", (0, 180, 255))
@@ -393,6 +428,13 @@ def main() -> int:
                 p2_pitch_text = "n/a" if p2_head_pitch is None else f"{p2_head_pitch:.3f}"
                 bonus_prob_text = "n/a" if bonus_probability is None else f"{bonus_probability:.2f}"
                 model_loaded_text = "yes" if bonus_model.model is not None else "no"
+                if p1_action == LEFT:
+                    movement_key_text = "LEFT HELD"
+                elif p1_action == RIGHT:
+                    movement_key_text = "RIGHT HELD"
+                else:
+                    movement_key_text = "RELEASED"
+                jump_key_text = "HELD" if jump_key_held else "RELEASED"
 
                 lines = [
                     (f"FPS: {fps:.1f}", (255, 255, 255)),
@@ -403,15 +445,16 @@ def main() -> int:
                 lines.extend(
                     [
                         (f"Player 1 status: {p1_status}", (0, 220, 255) if p1_status == "detected" else (0, 180, 255)),
-                        (f"Player 1 action: {p1_action}", (0, 220, 255)),
+                        (f"Movement key: {movement_key_text}", (0, 220, 255)),
                         (f"Player 1 head_yaw: {p1_yaw_text}", (0, 220, 255)),
                         (
                             f"Player 2 status: {p2_status}",
                             (80, 255, 80) if p2_status in ("detected", "solo fallback") else (0, 180, 255),
                         ),
-                        (f"Player 2 action: {p2_action}", (80, 255, 80)),
+                        (f"Jump key: {jump_key_text}", (80, 255, 80)),
                         (f"Player 2 smile_score: {p2_smile_text}", (80, 255, 80)),
                         (f"Player 2 head_pitch: {p2_pitch_text}", (80, 255, 80)),
+                        (f"Bonus key: {str(config.BONUS_KEY).upper()}", (255, 220, 80)),
                         (f"Bonus status: {bonus_status} | proba: {bonus_prob_text}", (255, 220, 80)),
                         (f"Model loaded: {model_loaded_text} | {model_status}", (230, 230, 230)),
                         (f"Keyboard: {keyboard.status()}", (230, 230, 230)),
@@ -430,11 +473,13 @@ def main() -> int:
                     if not solo_test_mode:
                         keyboard.release_all()
                         movement_smoother.reset()
-                        jump_debouncer.reset()
+                        jump_hold.reset()
                         bonus_debouncer.reset()
 
     finally:
         keyboard.release_all()
+        for key in (left_key, right_key, jump_key, bonus_key):
+            keyboard.release(key)
         cap.release()
         cv2.destroyAllWindows()
 

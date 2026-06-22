@@ -244,6 +244,16 @@ Przed grą:
 
 Kolega gra na swoim komputerze normalnie klawiaturą jako drugi gracz online. Do testowania wysyłanych klawiszy można użyć Notatnika: obrót głowy powinien wpisywać `A`/`D`, uśmiech `W`, a gest bonusu spację — zgodnie z domyślnymi wartościami w `config.py`.
 
+## Test klawiszy bez kamery
+
+Otwórz Notatnik albo inne pole tekstowe, uruchom poniższe polecenie i w ciągu 3 sekund kliknij pole tekstowe:
+
+```bash
+python key_test.py
+```
+
+Skrypt kolejno wyśle skonfigurowane klawisze ruchu, skoku i bonusu. Przy ustawieniach domyślnych oczekiwany tekst to `adw` oraz spacja. Jeżeli klawisze działają w Notatniku, ale nie w grze, kliknij ponownie okno Blobby Online — przeglądarka musi mieć focus.
+
 ## Jak odpalić grę
 
 1. Wejdź na https://www.blobby-online.com/de
@@ -273,9 +283,11 @@ Tryb `gaze` nie jest domyślny, bo oczy muszą śledzić piłkę i ekran.
 
 Sterowanie gestami:
 
-- Player 1: obrót głowy w lewo/prawo (`head_yaw`) = ruch w lewo/prawo,
-- Player 2: uśmiech (`smile_score`) = skok,
-- Player 2: pochylenie głowy w dół = bonus klasyfikowany przez model SVM.
+- Player 1: obrót głowy w lewo/prawo (`head_yaw`) = trzymanie `A`/`D` aż do powrotu głowy do martwej strefy,
+- Player 2: uśmiech (`smile_score`) = trzymanie `W`; brak uśmiechu zwalnia `W`,
+- Player 2: pochylenie głowy w dół = krótki TAP `Space`, klasyfikowany przez model SVM.
+
+Ruch i skok działają jak normalnie trzymane klawisze, a nie seria naciśnięć co klatkę. Bonus pozostaje pojedynczym tapnięciem z cooldownem. Jeśli `Space` nie działa w grze, najpierw kliknij jej okno, aby odzyskało focus.
 
 ## Cechy
 
@@ -299,8 +311,8 @@ Cechy są normalizowane względem rozmiaru twarzy, żeby działały stabilniej p
 
 Przed turniejem sprawdź i dostosuj w `config.py`:
 
-- `HEAD_YAW_LEFT_THRESHOLD`
-- `HEAD_YAW_RIGHT_THRESHOLD`
+- `HEAD_YAW_ENTER_THRESHOLD`
+- `HEAD_YAW_EXIT_THRESHOLD`
 - `JUMP_MODE` (domyślnie `"smile"`)
 - `SMILE_THRESHOLD`
 - `JUMP_CONFIRM_FRAMES`
@@ -310,7 +322,7 @@ Przed turniejem sprawdź i dostosuj w `config.py`:
 - ustawienie dwóch graczy w kamerze
 - poprawne przypisanie lewej osoby jako Gracz 1 i prawej osoby jako Gracz 2
 
-Najważniejsze jest dobranie progów do konkretnej kamerki, oświetlenia i odległości od laptopa. Jeśli neutralna głowa odpala ruch, zwiększ martwą strefę przez oddalenie progów od zera, np. `-0.07` i `0.07`.
+Najważniejsze jest dobranie progów do konkretnej kamerki, oświetlenia i odległości od laptopa. `HEAD_YAW_ENTER_THRESHOLD` określa mocniejsze wychylenie potrzebne do rozpoczęcia ruchu, a mniejszy `HEAD_YAW_EXIT_THRESHOLD` utrzymuje kierunek do powrotu głowy bliżej środka. Ta histereza ogranicza migotanie między ruchem i idle.
 
 Jeśli neutralna twarz uruchamia skok, zwiększ `SMILE_THRESHOLD`. Jeśli wyraźny uśmiech nie uruchamia skoku, zmniejsz go nieznacznie i obserwuj `smile_score` w overlayu.
 
@@ -319,7 +331,7 @@ Jeśli neutralna twarz uruchamia skok, zwiększ `SMILE_THRESHOLD`. Jeśli wyraź
 Kontroler używa smoothingu i debounce:
 
 - akcja ruchu musi utrzymać się przez kilka klatek,
-- skok jest krótkim tapnięciem z cooldownem,
+- po potwierdzonym uśmiechu klawisz skoku jest trzymany aż do zaniku uśmiechu,
 - bonus wymaga kilku kolejnych klatek klasyfikacji ML i ma cooldown,
 - w normalnym trybie przy braku dwóch twarzy program puszcza wszystkie klawisze,
 - w trybie solo jedna twarz steruje wyłącznie akcjami Playera 2,

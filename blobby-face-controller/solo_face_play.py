@@ -18,14 +18,14 @@ from feature_extraction import (
     extract_features,
     face_bbox,
 )
+from keyboard_utils import resolve_key, tap_key
 
 try:
-    from pynput.keyboard import Controller, Key
+    from pynput.keyboard import Controller
 
     PYNPUT_IMPORT_ERROR = None
 except Exception as exc:  # pragma: no cover - depends on the local desktop.
     Controller = None
-    Key = None
     PYNPUT_IMPORT_ERROR = exc
 
 
@@ -33,7 +33,6 @@ LEFT = "LEFT"
 RIGHT = "RIGHT"
 IDLE = "IDLE"
 JUMP_CONFIRM_FRAMES = getattr(config, "JUMP_CONFIRM_FRAMES", 2)
-JUMP_COOLDOWN_SECONDS = getattr(config, "JUMP_COOLDOWN_SECONDS", 0.35)
 BONUS_CONFIRM_FRAMES = getattr(config, "BONUS_CONFIRM_FRAMES", 3)
 BONUS_COOLDOWN_SECONDS = getattr(config, "BONUS_COOLDOWN_SECONDS", 1.5)
 
@@ -97,15 +96,37 @@ class GestureDebouncer:
         self.armed = True
 
 
+class ConfirmedHold:
+    """Hold an action after confirmation and release it immediately when false."""
+
+    def __init__(self, confirm_frames: int):
+        self.confirm_frames = max(1, confirm_frames)
+        self.true_frames = 0
+        self.held = False
+
+    def update(self, is_active: bool) -> bool:
+        if not is_active:
+            self.true_frames = 0
+            self.held = False
+            return False
+        self.true_frames += 1
+        if self.true_frames >= self.confirm_frames:
+            self.held = True
+        return self.held
+
+    def reset(self) -> None:
+        self.true_frames = 0
+        self.held = False
+
+
 class KeyboardManager:
-    """Hold movement keys and safely release one-shot key taps."""
+    """Hold movement/jump keys without repeating keyDown every frame."""
 
     def __init__(self):
         self.controller = None
         self.enabled = False
         self.error = str(PYNPUT_IMPORT_ERROR) if PYNPUT_IMPORT_ERROR else ""
-        self.held_keys: set[str] = set()
-        self.tap_release_at: dict[str, float] = {}
+        self.held_keys: set[object] = set()
 
         if Controller is not None and PYNPUT_IMPORT_ERROR is None:
             try:
@@ -114,69 +135,55 @@ class KeyboardManager:
             except Exception as exc:  # pragma: no cover - desktop dependent.
                 self.error = str(exc)
 
-    @staticmethod
-    def parse_key(key_name: str):
-        if Key is not None and hasattr(Key, key_name):
-            return getattr(Key, key_name)
-        return key_name
-
-    def press(self, key_name: str) -> None:
+    def press(self, key) -> None:
         if not self.enabled or self.controller is None:
             return
         try:
-            self.controller.press(self.parse_key(key_name))
+            self.controller.press(key)
         except Exception as exc:
             self.enabled = False
             self.error = str(exc)
 
-    def release(self, key_name: str) -> None:
-        if not self.enabled or self.controller is None:
+    def release(self, key) -> None:
+        if self.controller is None:
             return
         try:
-            self.controller.release(self.parse_key(key_name))
+            self.controller.release(key)
         except Exception as exc:
             self.enabled = False
             self.error = str(exc)
 
-    def hold(self, key_name: str) -> None:
-        if key_name not in self.held_keys:
-            self.press(key_name)
-            self.held_keys.add(key_name)
+    def hold(self, key) -> None:
+        if key not in self.held_keys:
+            self.press(key)
+            self.held_keys.add(key)
 
-    def release_hold(self, key_name: str) -> None:
-        if key_name in self.held_keys:
-            self.held_keys.remove(key_name)
-            if key_name not in self.tap_release_at:
-                self.release(key_name)
+    def release_hold(self, key) -> None:
+        if key in self.held_keys:
+            self.held_keys.remove(key)
+            self.release(key)
 
-    def set_movement(self, action: str) -> None:
+    def set_movement(self, action: str, left_key, right_key) -> None:
         if action == LEFT:
-            self.release_hold(config.MOVE_RIGHT_KEY)
-            self.hold(config.MOVE_LEFT_KEY)
+            self.release_hold(right_key)
+            self.hold(left_key)
         elif action == RIGHT:
-            self.release_hold(config.MOVE_LEFT_KEY)
-            self.hold(config.MOVE_RIGHT_KEY)
+            self.release_hold(left_key)
+            self.hold(right_key)
         else:
-            self.release_hold(config.MOVE_LEFT_KEY)
-            self.release_hold(config.MOVE_RIGHT_KEY)
+            self.release_hold(left_key)
+            self.release_hold(right_key)
 
-    def tap(self, key_name: str, now: float) -> None:
-        self.press(key_name)
-        release_at = now + config.KEY_TAP_SECONDS
-        self.tap_release_at[key_name] = max(self.tap_release_at.get(key_name, 0.0), release_at)
-
-    def update_taps(self, now: float) -> None:
-        for key_name, release_at in list(self.tap_release_at.items()):
-            if now >= release_at:
-                del self.tap_release_at[key_name]
-                if key_name not in self.held_keys:
-                    self.release(key_name)
+    def set_hold(self, key, should_hold: bool) -> None:
+        if should_hold:
+            self.hold(key)
+        else:
+            self.release_hold(key)
 
     def release_all(self) -> None:
-        for key_name in set(self.held_keys) | set(self.tap_release_at):
-            self.release(key_name)
+        for key in set(self.held_keys):
+            self.release(key)
         self.held_keys.clear()
-        self.tap_release_at.clear()
 
     def status(self) -> str:
         if self.enabled:
@@ -227,10 +234,26 @@ def predict_bonus(model, feature_vector: np.ndarray) -> tuple[bool, float | None
     return prediction == config.LABEL_BONUS, None
 
 
-def movement_from_head_yaw(head_yaw: float) -> str:
-    if head_yaw < config.HEAD_YAW_LEFT_THRESHOLD:
+def movement_from_head_yaw(head_yaw: float, current_move: str = IDLE) -> str:
+    """Return movement with separate enter and exit thresholds (hysteresis)."""
+    enter = config.HEAD_YAW_ENTER_THRESHOLD
+    exit_threshold = config.HEAD_YAW_EXIT_THRESHOLD
+
+    if current_move == LEFT:
+        if head_yaw > enter:
+            return RIGHT
+        if head_yaw > -exit_threshold:
+            return IDLE
         return LEFT
-    if head_yaw > config.HEAD_YAW_RIGHT_THRESHOLD:
+    if current_move == RIGHT:
+        if head_yaw < -enter:
+            return LEFT
+        if head_yaw < exit_threshold:
+            return IDLE
+        return RIGHT
+    if head_yaw < -enter:
+        return LEFT
+    if head_yaw > enter:
         return RIGHT
     return IDLE
 
@@ -268,15 +291,18 @@ def main() -> int:
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, config.FRAME_WIDTH)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, config.FRAME_HEIGHT)
 
+    left_key = resolve_key(config.MOVE_LEFT_KEY)
+    right_key = resolve_key(config.MOVE_RIGHT_KEY)
+    jump_key = resolve_key(config.JUMP_KEY)
+    bonus_key = resolve_key(config.BONUS_KEY)
     keyboard = KeyboardManager()
     bonus_model = load_bonus_model()
     movement_smoother = StableAction(config.ACTION_CONFIRM_FRAMES)
-    jump_debouncer = GestureDebouncer(JUMP_CONFIRM_FRAMES, JUMP_COOLDOWN_SECONDS)
+    jump_hold = ConfirmedHold(JUMP_CONFIRM_FRAMES)
     bonus_debouncer = GestureDebouncer(BONUS_CONFIRM_FRAMES, BONUS_COOLDOWN_SECONDS)
 
     prev_time = time.perf_counter()
     fps = 0.0
-    jump_display_until = 0.0
     bonus_display_until = 0.0
     mp_face_mesh = mp.solutions.face_mesh
 
@@ -295,7 +321,6 @@ def main() -> int:
                     break
 
                 now = time.perf_counter()
-                keyboard.update_taps(now)
 
                 frame = cv2.flip(frame, 1)
                 rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -304,7 +329,7 @@ def main() -> int:
                 face = results.multi_face_landmarks[0] if results.multi_face_landmarks else None
 
                 movement_action = IDLE
-                jump_status = "READY"
+                jump_key_held = False
                 bonus_status = "MODEL NOT LOADED" if bonus_model.model is None else "READY"
                 head_yaw = None
                 smile_score = None
@@ -317,23 +342,18 @@ def main() -> int:
                     head_yaw = feature_dict["head_yaw"]
                     smile_score = estimate_smile_score(feature_dict)
 
-                    movement_action = movement_smoother.update(movement_from_head_yaw(head_yaw))
-                    keyboard.set_movement(movement_action)
+                    movement_target = movement_from_head_yaw(head_yaw, movement_smoother.stable)
+                    movement_action = movement_smoother.update(movement_target)
+                    keyboard.set_movement(movement_action, left_key, right_key)
 
-                    if jump_debouncer.update(smile_score > config.SMILE_THRESHOLD, now):
-                        keyboard.tap(config.JUMP_KEY, now)
-                        jump_display_until = now + 0.25
-                    jump_cooldown = jump_debouncer.cooldown_left(now)
-                    if now < jump_display_until:
-                        jump_status = "JUMP"
-                    elif jump_cooldown > 0:
-                        jump_status = f"COOLDOWN {jump_cooldown:.1f}s"
+                    jump_key_held = jump_hold.update(smile_score >= config.SMILE_THRESHOLD)
+                    keyboard.set_hold(jump_key, jump_key_held)
 
                     if bonus_model.model is not None:
                         try:
                             bonus_raw, bonus_probability = predict_bonus(bonus_model.model, feature_vector)
                             if bonus_debouncer.update(bonus_raw, now):
-                                keyboard.tap(config.BONUS_KEY, now)
+                                tap_key(keyboard, bonus_key, duration=config.KEY_TAP_SECONDS)
                                 bonus_display_until = now + 0.35
                             bonus_cooldown = bonus_debouncer.cooldown_left(now)
                             if now < bonus_display_until:
@@ -347,8 +367,10 @@ def main() -> int:
                         bonus_debouncer.reset()
                 else:
                     keyboard.release_all()
+                    keyboard.release(jump_key)
+                    keyboard.release(bonus_key)
                     movement_smoother.reset()
-                    jump_debouncer.reset()
+                    jump_hold.reset()
                     bonus_debouncer.reset()
 
                 fps = 0.9 * fps + 0.1 * (1.0 / max(now - prev_time, 1e-6))
@@ -358,6 +380,13 @@ def main() -> int:
                 smile_text = "n/a" if smile_score is None else f"{smile_score:.3f}"
                 probability_text = "n/a" if bonus_probability is None else f"{bonus_probability:.2f}"
                 detected_text = "yes" if face is not None else "no - keys released"
+                if movement_action == LEFT:
+                    movement_key_text = "LEFT HELD"
+                elif movement_action == RIGHT:
+                    movement_key_text = "RIGHT HELD"
+                else:
+                    movement_key_text = "RELEASED"
+                jump_key_text = "HELD" if jump_key_held else "RELEASED"
 
                 put_lines(
                     frame,
@@ -365,11 +394,12 @@ def main() -> int:
                         (f"FPS: {fps:.1f}", (255, 255, 255)),
                         ("SOLO FACE PLAY", (80, 255, 80)),
                         (f"Detected face: {detected_text}", (80, 255, 80) if face is not None else (0, 80, 255)),
-                        (f"Action movement: {movement_action}", (0, 220, 255)),
+                        (f"Movement key: {movement_key_text}", (0, 220, 255)),
                         (f"head_yaw: {yaw_text}", (0, 220, 255)),
-                        (f"Jump: {jump_status}", (80, 255, 80)),
+                        (f"Jump key: {jump_key_text}", (80, 255, 80)),
                         (f"smile_score: {smile_text}", (80, 255, 80)),
-                        (f"Bonus: {bonus_status}", (255, 220, 80)),
+                        (f"Bonus key: {str(config.BONUS_KEY).upper()}", (255, 220, 80)),
+                        (f"Bonus status: {bonus_status}", (255, 220, 80)),
                         (f"Bonus probability: {probability_text}", (255, 220, 80)),
                         (f"Model: {bonus_model.status}", (230, 230, 230)),
                         (f"Keyboard: {keyboard.status()}", (230, 230, 230)),
@@ -382,6 +412,8 @@ def main() -> int:
                     break
     finally:
         keyboard.release_all()
+        for key in (left_key, right_key, jump_key, bonus_key):
+            keyboard.release(key)
         cap.release()
         cv2.destroyAllWindows()
 

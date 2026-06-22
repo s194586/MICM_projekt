@@ -27,6 +27,9 @@ EXPERIMENTAL_GAZE_MODE = "gaze"
 # Detection thresholds. Tune these on the lab camera before the tournament.
 HEAD_YAW_LEFT_THRESHOLD = -0.055
 HEAD_YAW_RIGHT_THRESHOLD = 0.055
+# Hysteresis thresholds use the normalized head_yaw feature, not degrees.
+HEAD_YAW_ENTER_THRESHOLD = 0.055
+HEAD_YAW_EXIT_THRESHOLD = 0.030
 # Player 2 jumps with a rule-based smile detector by default.
 JUMP_MODE = "smile"
 SMILE_THRESHOLD = 0.45
