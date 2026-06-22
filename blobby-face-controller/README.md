@@ -22,11 +22,14 @@ Projekt jest lokalny na start, ponieważ sterowanie grą wymaga lokalnej kamery,
 
 ```text
 MICM_projekt/
+├── run_lab.bat
+├── setup_lab_windows.bat
 ├── blobby-face-controller/
 │   ├── README.md
 │   ├── requirements.txt
 │   ├── config.py
 │   ├── feature_extraction.py
+│   ├── check_lab_ready.py
 │   ├── test_camera.py
 │   ├── collect_dataset.py
 │   ├── train_bonus_model.py
@@ -34,14 +37,58 @@ MICM_projekt/
 │   ├── data/
 │   │   └── gestures.csv
 │   ├── models/
-│   │   └── bonus_model.pkl          # generowany po treningu
+│   │   └── bonus_model.pkl          # model dołączony w wersji lab-ready
 │   └── reports/
 │       ├── confusion_matrix.png     # generowany po treningu
 │       └── validation_metrics.txt   # generowany po treningu
-└── venv_projektmicm/                # tylko środowisko Pythona
+└── MICM projekt/                    # lokalne środowisko Pythona, poza Gitem
 ```
 
-`blobby-face-controller` zawiera kod projektu. `venv_projektmicm` jest tylko środowiskiem Pythona z zainstalowanymi bibliotekami. Plików projektu nie należy trzymać w folderze `venv_projektmicm`.
+`blobby-face-controller` zawiera kod projektu. `MICM projekt` jest tylko lokalnym środowiskiem Pythona z zainstalowanymi bibliotekami i nie trafia do Gita. Plików projektu nie należy trzymać w folderze środowiska.
+
+## Lab-ready quick start
+
+Model bonusu, dataset i raporty walidacyjne są dołączone do repozytorium. Na komputerze używanym do treningu nie trzeba ponownie zbierać danych ani trenować modelu.
+
+### Opcja A — pierwsze uruchomienie na nowym komputerze Windows
+
+1. Sklonuj repozytorium.
+2. Uruchom z katalogu głównego:
+
+   ```bat
+   setup_lab_windows.bat
+   ```
+
+3. Jeśli sanity check zakończy się komunikatem `READY`, uruchom:
+
+   ```bat
+   run_lab.bat
+   ```
+
+### Opcja B — instalacja ręczna w PowerShell
+
+```powershell
+cd MICM_Projekt
+py -3.11 -m venv "MICM projekt"
+& ".\MICM projekt\Scripts\Activate.ps1"
+cd .\blobby-face-controller
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+python check_lab_ready.py
+python realtime_controller.py
+```
+
+### Checklista przed meczem
+
+- `models/bonus_model.pkl` istnieje,
+- kamera działa i `check_lab_ready.py` pokazuje `READY`,
+- dwie osoby siedzą w kadrze,
+- lewa osoba to Player 1: obrót głowy steruje ruchem lewo/prawo,
+- prawa osoba to Player 2: uśmiech steruje skokiem, a głowa w dół bonusem,
+- okno gry ma focus — kliknij je przed rozpoczęciem,
+- `q` bezpiecznie zamyka kontroler i zwalnia klawisze.
+
+Model bonusu jest zapisany w repozytorium jako `models/bonus_model.pkl`. Nie trzeba trenować go ponownie, jeśli jako Player 2 występuje ta sama osoba co podczas zbierania danych. Przy innym oświetleniu, kamerze lub osobie można ponownie zebrać dataset przez `collect_dataset.py` i uruchomić `train_bonus_model.py`.
 
 ## Instalacja
 
@@ -54,16 +101,16 @@ python -m pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-Windows, jeśli środowisko jest w katalogu `MICM_projekt\venv_projektmicm`:
+Windows, jeśli środowisko jest w katalogu `MICM_projekt\MICM projekt`:
 
-```bash
-cd %USERPROFILE%\projects\MICM_projekt\blobby-face-controller
-..\venv_projektmicm\Scripts\activate
+```powershell
+cd "$env:USERPROFILE\projects\MICM_projekt\blobby-face-controller"
+& "..\MICM projekt\Scripts\Activate.ps1"
 python -m pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-Przed każdym uruchomieniem skryptów wejdź do katalogu `blobby-face-controller` i aktywuj środowisko komendą `source ../venv_projektmicm/bin/activate`.
+Przed uruchomieniem skryptów wejdź do katalogu `blobby-face-controller` i aktywuj właściwe środowisko Pythona.
 
 ## Troubleshooting
 
@@ -86,7 +133,7 @@ Oczekiwany wynik to `0.10.21` oraz `True`.
 
 ## Aktualny workflow
 
-Wszystkie polecenia uruchamiaj lokalnie z katalogu `blobby-face-controller`:
+Poniższe polecenia są potrzebne przy ponownym zbieraniu danych i treningu. Gotowa wersja lab-ready może od razu użyć `run_lab.bat`. Wszystkie polecenia uruchamiaj lokalnie z katalogu `blobby-face-controller`:
 
 1. Sprawdź kamerę i przypisanie graczy:
 
