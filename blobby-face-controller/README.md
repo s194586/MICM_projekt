@@ -7,8 +7,8 @@ Lokalny kontroler do Blobby Volley Online sterowany przez dwie osoby widoczne w 
 - Gracz 1 to osoba po lewej stronie obrazu z kamery.
 - Gracz 2 to osoba po prawej stronie obrazu z kamery.
 - Gracz 1 steruje ruchem w lewo/prawo lekkim obrotem głowy.
-- Gracz 2 steruje skokiem szybkim otwarciem ust.
-- Gracz 2 aktywuje bonus gestem: szeroki uśmiech + lekkie uniesienie brwi.
+- Gracz 2 steruje skokiem uśmiechem wykrywanym regułowo przez `smile_score`.
+- Gracz 2 aktywuje bonus lekkim pochyleniem głowy w dół (krótkie skinienie).
 - Bonus jest wykrywany przez model ML, a nie przez same reguły if/else.
 - Gdy system widzi mniej niż dwie twarze w trybie gry, puszcza klawisze i czeka.
 
@@ -97,10 +97,10 @@ Wszystkie polecenia uruchamiaj lokalnie z katalogu `blobby-face-controller`:
 2. Zbierz własny dataset gestu bonusowego:
 
    ```bash
-   python collect_dataset.py
+   python collect_dataset.py --reset
    ```
 
-   Zbierz minimum 50 próbek `neutral` i 50 próbek `bonus_gesture`; zalecane jest 100-150 próbek na klasę.
+   `neutral` oznacza normalną pozycję głowy, a `bonus_gesture` lekkie pochylenie głowy w dół. Zbierz minimum 50 próbek na klasę; zalecane jest 100-150.
 
 3. Wytrenuj i zweryfikuj model:
 
@@ -136,10 +136,18 @@ Zbieranie datasetu:
 python collect_dataset.py
 ```
 
+Opcja `--reset` usuwa dotychczasowe próbki i tworzy od nowa CSV z jednym poprawnym nagłówkiem:
+
+```bash
+python collect_dataset.py --reset
+```
+
 W oknie zbierania danych:
 
 - `n` zapisuje próbkę klasy `neutral`
 - `b` zapisuje próbkę klasy `bonus_gesture`
+- `1` zapisuje burst 50 próbek klasy `neutral`
+- `2` zapisuje burst 50 próbek klasy `bonus_gesture`
 - `q` kończy program
 
 Zbierz minimum 50 próbek na klasę. Najlepiej zebrać więcej, np. 80-150, z kilkoma wariantami pozycji głowy i oświetlenia.
@@ -163,6 +171,38 @@ Uruchomienie kontrolera:
 ```bash
 python realtime_controller.py
 ```
+
+## Trening samemu w domu
+
+1. Uruchom kolektor z wyczyszczeniem poprzedniego datasetu:
+
+   ```bash
+   python collect_dataset.py --reset
+   ```
+
+2. Zbieraj `neutral`: ustaw twarz normalnie, trzymaj głowę prosto i nie pochylaj jej w dół. Klawisz `n` zapisuje jedną próbkę, a `1` uruchamia burst 50 próbek.
+
+3. Zbieraj `bonus_gesture`: pochyl głowę lekko w dół jak przy krótkim skinieniu, nie wychodź z kadru i nie przesadzaj z ruchem. Klawisz `b` zapisuje jedną próbkę, a `2` uruchamia burst 50 próbek. Podczas burstu utrzymaj daną pozycję do jego zakończenia.
+
+4. Zbierz minimum 50 próbek `neutral` i 50 próbek `bonus_gesture`; lepiej zebrać 100-150 na klasę.
+
+5. Wytrenuj model:
+
+   ```bash
+   python train_bonus_model.py
+   ```
+
+6. Przetestuj sterowanie:
+
+   ```bash
+   python realtime_controller.py
+   ```
+
+7. Na labach osoba, na której trenowano model, powinna siedzieć jako Player 2. Player 2 uśmiecha się do skoku i pochyla głowę w dół do bonusu. Player 1 obraca głowę w lewo lub prawo, aby sterować ruchem.
+
+Skok nie jest trenowany: działa regułowo na podstawie `smile_score`. Bonus jest trenowany jako model ML, aby spełnić wymaganie projektu. `data/gestures.csv` zawiera cechy MediaPipe i etykiety, a nie obrazy. `models/bonus_model.pkl` jest finalnym modelem bonusu używanym przez kontroler realtime.
+
+Po tej zmianie ergonomii trzeba zebrać dataset od nowa i ponownie wytrenować model. Kontroler odrzuca starsze modele, które nie mają oznaczenia gestu `head_down_nod`.
 
 ## Jak odpalić grę
 
@@ -191,6 +231,12 @@ MOVE_CONTROL_MODE = "head_yaw"
 
 Tryb `gaze` nie jest domyślny, bo oczy muszą śledzić piłkę i ekran.
 
+Sterowanie gestami:
+
+- Player 1: obrót głowy w lewo/prawo (`head_yaw`) = ruch w lewo/prawo,
+- Player 2: uśmiech (`smile_score`) = skok,
+- Player 2: pochylenie głowy w dół = bonus klasyfikowany przez model SVM.
+
 ## Cechy
 
 Dataset nie zapisuje obrazów. Zapisywane są tylko cechy liczbowe z landmarków MediaPipe:
@@ -215,7 +261,9 @@ Przed turniejem sprawdź i dostosuj w `config.py`:
 
 - `HEAD_YAW_LEFT_THRESHOLD`
 - `HEAD_YAW_RIGHT_THRESHOLD`
-- `MOUTH_OPEN_THRESHOLD`
+- `JUMP_MODE` (domyślnie `"smile"`)
+- `SMILE_THRESHOLD`
+- `JUMP_CONFIRM_FRAMES`
 - `CAMERA_INDEX`
 - `MOVE_LEFT_KEY`, `MOVE_RIGHT_KEY`, `JUMP_KEY`, `BONUS_KEY`
 - `BONUS_COOLDOWN_SECONDS`
@@ -223,6 +271,8 @@ Przed turniejem sprawdź i dostosuj w `config.py`:
 - poprawne przypisanie lewej osoby jako Gracz 1 i prawej osoby jako Gracz 2
 
 Najważniejsze jest dobranie progów do konkretnej kamerki, oświetlenia i odległości od laptopa. Jeśli neutralna głowa odpala ruch, zwiększ martwą strefę przez oddalenie progów od zera, np. `-0.07` i `0.07`.
+
+Jeśli neutralna twarz uruchamia skok, zwiększ `SMILE_THRESHOLD`. Jeśli wyraźny uśmiech nie uruchamia skoku, zmniejsz go nieznacznie i obserwuj `smile_score` w overlayu.
 
 ## Stabilność
 

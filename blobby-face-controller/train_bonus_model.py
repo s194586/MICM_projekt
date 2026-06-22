@@ -1,4 +1,4 @@
-"""Train and validate the ML classifier used for the Player 2 bonus gesture."""
+"""Train the Player 2 head-down bonus classifier (neutral vs bonus_gesture)."""
 
 from __future__ import annotations
 
@@ -169,6 +169,7 @@ def main() -> int:
     payload = {
         "model": model,
         "feature_names": FEATURE_NAMES,
+        "target_gesture": config.BONUS_GESTURE_ID,
         "label_names": config.LABEL_NAMES,
         "trained_at": datetime.now().isoformat(timespec="seconds"),
         "metrics": {
@@ -188,6 +189,7 @@ def main() -> int:
 
     metrics_text = (
         "Blobby Face Controller - bonus model validation\n"
+        f"Target gesture: {config.BONUS_GESTURE_ID} (Player 2 head tilted down / nod down)\n"
         f"Trained at: {payload['trained_at']}\n"
         f"Dataset: {config.DATASET_PATH}\n"
         f"Model: StandardScaler + SVC(kernel='rbf', probability=True)\n\n"

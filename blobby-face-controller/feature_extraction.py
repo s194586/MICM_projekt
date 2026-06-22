@@ -8,7 +8,7 @@ Google Colab later for dataset inspection or model training.
 from __future__ import annotations
 
 import math
-from typing import Iterable
+from typing import Iterable, Mapping
 
 import numpy as np
 
@@ -142,3 +142,12 @@ def extract_features(landmarks) -> np.ndarray:
     """Return the ordered numeric feature vector used by CSV and ML model."""
     feature_dict = extract_feature_dict(landmarks)
     return np.array([feature_dict[name] for name in FEATURE_NAMES], dtype=np.float32)
+
+
+def estimate_smile_score(features: Mapping[str, float]) -> float:
+    """Return a simple normalized smile score for rule-based jump detection.
+
+    Mouth width is already normalized by face width, which makes this score
+    easier to calibrate across small changes in distance from the camera.
+    """
+    return float(features["mouth_width_ratio"])

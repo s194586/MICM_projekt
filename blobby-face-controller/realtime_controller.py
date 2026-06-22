@@ -11,7 +11,14 @@ import mediapipe as mp
 import numpy as np
 
 import config
-from feature_extraction import FEATURE_NAMES, extract_feature_dict, extract_features, face_bbox, sort_faces_left_to_right
+from feature_extraction import (
+    FEATURE_NAMES,
+    estimate_smile_score,
+    extract_feature_dict,
+    extract_features,
+    face_bbox,
+    sort_faces_left_to_right,
+)
 
 try:
     from pynput.keyboard import Controller, Key
@@ -181,14 +188,16 @@ def load_bonus_model() -> BonusModel:
         return BonusModel(None, f"model not loaded: missing {config.MODEL_PATH.name}")
     try:
         payload = joblib.load(config.MODEL_PATH)
-        model = payload.get("model") if isinstance(payload, dict) else payload
+        model = payload.get("model") if isinstance(payload, dict) else None
     except Exception as exc:
         return BonusModel(None, f"model not loaded: {exc}")
 
     if model is None:
-        return BonusModel(None, "model not loaded: invalid model file")
-    if isinstance(payload, dict) and payload.get("feature_names") != FEATURE_NAMES:
+        return BonusModel(None, "model not loaded: invalid or legacy model file")
+    if payload.get("feature_names") != FEATURE_NAMES:
         return BonusModel(None, "model not loaded: feature schema mismatch")
+    if payload.get("target_gesture") != config.BONUS_GESTURE_ID:
+        return BonusModel(None, "model not loaded: retrain for head-down gesture")
     return BonusModel(model, "model OK")
 
 
@@ -216,6 +225,13 @@ def movement_from_head_yaw(head_yaw: float) -> str:
     if head_yaw > config.HEAD_YAW_RIGHT_THRESHOLD:
         return RIGHT
     return IDLE
+
+
+def is_jump_gesture(features: dict[str, float]) -> bool:
+    """Detect Player 2 jump without involving the trained bonus model."""
+    if config.JUMP_MODE == "mouth_open":
+        return features["mouth_open_ratio"] > config.MOUTH_OPEN_THRESHOLD
+    return estimate_smile_score(features) > config.SMILE_THRESHOLD
 
 
 def predict_bonus(model, feature_vector: np.ndarray) -> tuple[bool, float | None]:
@@ -283,9 +299,10 @@ def main() -> int:
                 p2_status = "missing"
                 p1_action = IDLE
                 p2_action = IDLE
-                bonus_status = "disabled" if bonus_model.model is None else "ready"
+                bonus_status = "MODEL NOT LOADED" if bonus_model.model is None else "READY"
                 p1_head_yaw = None
-                p2_mouth = None
+                p2_smile_score = None
+                p2_head_pitch = None
                 bonus_probability = None
 
                 if len(faces) >= 2:
@@ -297,14 +314,16 @@ def main() -> int:
 
                     p1_features = extract_feature_dict(player1)
                     p2_features = extract_feature_dict(player2)
+                    p2_feature_vector = extract_features(player2)
                     p1_head_yaw = p1_features["head_yaw"]
-                    p2_mouth = p2_features["mouth_open_ratio"]
+                    p2_smile_score = estimate_smile_score(p2_features)
+                    p2_head_pitch = p2_features["head_pitch"]
 
                     raw_movement = movement_from_head_yaw(p1_head_yaw)
                     p1_action = movement_smoother.update(raw_movement)
                     keyboard.set_movement(p1_action)
 
-                    jump_raw = p2_mouth > config.MOUTH_OPEN_THRESHOLD
+                    jump_raw = is_jump_gesture(p2_features)
                     if jump_debouncer.update(jump_raw, now):
                         keyboard.tap(config.JUMP_KEY, now)
                         jump_display_until = now + 0.25
@@ -312,21 +331,21 @@ def main() -> int:
 
                     if bonus_model.model is not None:
                         try:
-                            bonus_raw, bonus_probability = predict_bonus(bonus_model.model, extract_features(player2))
+                            bonus_raw, bonus_probability = predict_bonus(bonus_model.model, p2_feature_vector)
                             if bonus_debouncer.update(bonus_raw, now):
                                 keyboard.tap(config.BONUS_KEY, now)
                                 bonus_display_until = now + 0.35
                             cooldown = bonus_debouncer.cooldown_left(now)
                             if now < bonus_display_until:
-                                bonus_status = "BONUS"
+                                bonus_status = "ACTIVE"
                             elif cooldown > 0:
-                                bonus_status = f"cooldown {cooldown:.1f}s"
+                                bonus_status = f"COOLDOWN {cooldown:.1f}s"
                             else:
-                                bonus_status = "ready"
+                                bonus_status = "READY"
                         except Exception as exc:
-                            bonus_model = BonusModel(None, f"prediction error: {exc}")
+                            bonus_model = BonusModel(None, f"model not loaded: prediction error: {exc}")
                             model_status = bonus_model.status
-                            bonus_status = "disabled"
+                            bonus_status = "MODEL NOT LOADED"
                     else:
                         bonus_debouncer.reset()
                 else:
@@ -350,8 +369,10 @@ def main() -> int:
                     warning_color = (0, 80, 255)
 
                 p1_yaw_text = "n/a" if p1_head_yaw is None else f"{p1_head_yaw:.3f}"
-                p2_mouth_text = "n/a" if p2_mouth is None else f"{p2_mouth:.3f}"
+                p2_smile_text = "n/a" if p2_smile_score is None else f"{p2_smile_score:.3f}"
+                p2_pitch_text = "n/a" if p2_head_pitch is None else f"{p2_head_pitch:.3f}"
                 bonus_prob_text = "n/a" if bonus_probability is None else f"{bonus_probability:.2f}"
+                model_loaded_text = "yes" if bonus_model.model is not None else "no"
 
                 lines = [
                     (f"FPS: {fps:.1f}", (255, 255, 255)),
@@ -366,9 +387,10 @@ def main() -> int:
                         (f"Player 1 head_yaw: {p1_yaw_text}", (0, 220, 255)),
                         (f"Player 2 status: {p2_status}", (80, 255, 80) if p2_status == "detected" else (0, 180, 255)),
                         (f"Player 2 action: {p2_action}", (80, 255, 80)),
-                        (f"Player 2 mouth_open_ratio: {p2_mouth_text}", (80, 255, 80)),
-                        (f"Bonus: {bonus_status} | proba: {bonus_prob_text}", (255, 220, 80)),
-                        (f"Model: {model_status}", (230, 230, 230)),
+                        (f"Player 2 smile_score: {p2_smile_text}", (80, 255, 80)),
+                        (f"Player 2 head_pitch: {p2_pitch_text}", (80, 255, 80)),
+                        (f"Bonus status: {bonus_status} | proba: {bonus_prob_text}", (255, 220, 80)),
+                        (f"Model loaded: {model_loaded_text} | {model_status}", (230, 230, 230)),
                         (f"Keyboard: {keyboard.status()}", (230, 230, 230)),
                         ("q = quit", (230, 230, 230)),
                     ]

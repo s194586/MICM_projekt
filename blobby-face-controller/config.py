@@ -23,6 +23,10 @@ EXPERIMENTAL_GAZE_MODE = "gaze"
 # Detection thresholds. Tune these on the lab camera before the tournament.
 HEAD_YAW_LEFT_THRESHOLD = -0.055
 HEAD_YAW_RIGHT_THRESHOLD = 0.055
+# Player 2 jumps with a rule-based smile detector by default.
+JUMP_MODE = "smile"
+SMILE_THRESHOLD = 0.45
+# Optional fallback for experiments; not used while JUMP_MODE == "smile".
 MOUTH_OPEN_THRESHOLD = 0.32
 BONUS_PROBA_THRESHOLD = 0.65
 
@@ -47,6 +51,7 @@ DATASET_PATH = DATA_DIR / "gestures.csv"
 MODEL_PATH = MODELS_DIR / "bonus_model.pkl"
 
 # Bonus classifier labels.
+BONUS_GESTURE_ID = "head_down_nod"
 LABEL_NEUTRAL = 0
 LABEL_BONUS = 1
 LABEL_NAMES = {
