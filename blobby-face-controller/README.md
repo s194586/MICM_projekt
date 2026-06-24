@@ -394,3 +394,114 @@ Kontroler używa smoothingu i debounce:
 - w normalnym trybie przy braku dwóch twarzy program puszcza wszystkie klawisze,
 - w trybie solo jedna twarz steruje wyłącznie akcjami Playera 2,
 - przy wyjściu `q` program zawsze puszcza klawisze.
+## Ultra fast experimental controller
+ASCII summary: this is a post-project experimental mode for maximum responsiveness in Blobby Online. It does not replace the report-ready controllers and does not change `realtime_controller.py` or `solo_face_play.py`.
+
+To jest eksperymentalny tryb dodany po oddaniu projektu. Nie zastÄ™puje wersji raportowej i nie zmienia dziaĹ‚ania `realtime_controller.py` ani `solo_face_play.py`. SĹ‚uĹĽy tylko do maksymalnej responsywnoĹ›ci w Blobby Online.
+
+Uruchomienie:
+
+```bash
+python ultra_fast_controller.py
+```
+
+Tryb bez overlay:
+
+```bash
+python ultra_fast_controller.py --no-overlay
+```
+
+Przydatne opcje:
+
+```bash
+python ultra_fast_controller.py --width 424 --height 240
+python ultra_fast_controller.py --bonus-mode rule
+python ultra_fast_controller.py --keyboard win32
+```
+
+Sterowanie:
+
+- glowa lewo/prawo = `A` / `D` hold
+- usmiech = `W` hold
+- glowa w dol = `Space` tap
+
+Najwazniejsze roznice wzgledem wersji raportowej:
+
+- jedna twarz steruje calym Blobbym,
+- kamera dziala w niskiej rozdzielczosci i probuje trzymac tylko najnowsza klatke,
+- MediaPipe FaceMesh pracuje w odchudzonej konfiguracji: `max_num_faces=1`, `refine_landmarks=False`,
+- brak rysowania landmarkow,
+- klawiatura ma backend `win32` przez `SendInput` z fallbackiem do `pynput`,
+- bonus ma dwa tryby: `model` i `rule`.
+
+Domyslnie `ultra_fast_controller.py` startuje w `--bonus-mode model`, czyli uzywa `models/bonus_model.pkl`. Jezeli modelu brakuje albo chcesz maksymalnie prosty eksperyment, przelacz na:
+
+```bash
+python ultra_fast_controller.py --bonus-mode rule
+```
+
+Tryb `rule` jest tylko eksperymentalnym przyspieszeniem po oddaniu projektu. Glowna wersja bonusu ML pozostaje w `realtime_controller.py`.
+
+Przed gra kliknij w okno Blobby, zeby przegladarka miala focus. Jezeli sterowanie dryfuje na `A` / `D`, zwieksz lokalne progi `DEFAULT_HEAD_YAW_ENTER` i `DEFAULT_HEAD_YAW_EXIT` w `ultra_fast_controller.py`. Jezeli ruch jest zbyt trudny do wywolania, zmniejsz `DEFAULT_HEAD_YAW_ENTER`.
+
+W trybie `--no-overlay` okno OpenCV nie jest otwierane, wiec zatrzymanie odbywa sie przez `Ctrl+C`.
+
+## Lite non-MediaPipe experimental controller
+
+This is an ultra-fast experimental controller that does not use MediaPipe. It does not replace the stable project controllers. If it feels unstable on your machine, go back to `solo_face_play.py` or `ultra_fast_controller.py`.
+
+Selected backend:
+
+- OpenCV-only was selected for the lowest dependency overhead and the simplest Windows setup.
+- The local OpenCV build already includes Haar cascades and legacy MOSSE tracking.
+- `FaceDetectorYN` is available in the API, but the YuNet model file is not bundled locally, so using it would add an extra external model asset and more setup friction.
+- The stable MediaPipe controllers remain available for project-compliant use.
+
+The lite controller uses:
+
+- Haar face detection for reacquire,
+- MOSSE tracking between detections for low latency,
+- lower-face ROI motion as the default jump signal,
+- rule-based head-down bonus tap,
+- Win32 `SendInput` keyboard output with `pynput` fallback.
+
+Run:
+
+```bash
+python lite_controller.py
+```
+
+Optional examples:
+
+```bash
+python lite_controller.py --no-overlay
+python lite_controller.py --width 320 --height 240
+python lite_controller.py --jump-mode smile_cascade
+```
+
+Before playing:
+
+1. Run `python lite_controller.py`.
+2. Keep a neutral face for the first second so calibration can lock your baseline.
+3. Click the Blobby game window so it has focus.
+4. Play.
+
+Controls:
+
+- face/head left-right translation = `A` / `D` hold
+- smile or fast lower-face change = `W` hold
+- head down = `Space` tap
+
+Runtime keys:
+
+- `q` = quit
+- `c` = recalibrate neutral
+- `o` = disable overlay
+- `r` = reset face tracking
+
+Notes:
+
+- If the game does not react, click the game window again.
+- If movement drifts, press `c` to recalibrate neutral.
+- If `mouth_roi_motion` feels too sensitive, try `--jump-mode smile_cascade`.
+- If the lite controller is not stable enough, switch back to `solo_face_play.py` or `ultra_fast_controller.py`.
