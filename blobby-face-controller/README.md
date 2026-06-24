@@ -1,568 +1,64 @@
-# Blobby Face Controller
+# Blobby Face Controller - YuNet Fast Version
 
-Lokalny kontroler do Blobby Volley Online sterowany przez dwie osoby widoczne w jednej kamerze. Projekt jest przygotowany pod VS Code i lokalne uruchomienie, bo finalna integracja wymaga dostępu do kamerki, okna gry, overlayu OpenCV oraz symulacji klawiatury.
+## What it is
 
-## Założenia
+One-person low-latency face controller for Blobby Online.
+It uses OpenCV YuNet through `cv2.FaceDetectorYN`, not MediaPipe.
 
-- Gracz 1 to osoba po lewej stronie obrazu z kamery.
-- Gracz 2 to osoba po prawej stronie obrazu z kamery.
-- Gracz 1 steruje ruchem w lewo/prawo lekkim obrotem głowy.
-- Gracz 2 steruje skokiem uśmiechem wykrywanym regułowo przez `smile_score`.
-- Gracz 2 aktywuje bonus lekkim pochyleniem głowy w dół (krótkie skinienie).
-- Bonus jest wykrywany przez model ML, a nie przez same reguły if/else.
-- W normalnym trybie mniej niż dwie twarze powodują zwolnienie klawiszy; tryb solo może użyć jednej twarzy jako Player 2.
+## Controls
 
-## Dlaczego tak
+- move head or face left-right = `A` / `D` hold
+- open mouth = `W` hold jump
+- move face or head down = `Space` tap bonus
+- `c` = recalibrate
+- `q` = quit
 
-MediaPipe został wybrany, bo działa szybko w czasie rzeczywistym i dostarcza landmarki twarzy bez trenowania ciężkiego modelu. SVM został wybrany, bo dataset jest mały, a klasyfikator tego typu dobrze działa na liczbowych cechach geometrycznych. Podstawowe akcje są regułowe, bo ruch i skok muszą być szybkie, przewidywalne i łatwe do kalibracji. Bonus jest ML/AI, bo tego wymaga projekt.
+`A` and `D` are never held together. `W` is independent from movement. `Space` taps without releasing `A`, `D`, or `W`. If no face is detected, the controller releases all keys.
 
-Projekt jest lokalny na start, ponieważ sterowanie grą wymaga lokalnej kamery, overlayu i symulacji klawiszy. Część treningowa jest oddzielona od kontrolera realtime, więc później można przenieść zbieranie/analizę danych albo trening do Google Colaba, jeśli prowadzący tego zażąda.
-
-## Struktura
-
-```text
-MICM_projekt/
-├── run_lab.bat
-├── setup_lab_windows.bat
-├── blobby-face-controller/
-│   ├── README.md
-│   ├── requirements.txt
-│   ├── config.py
-│   ├── feature_extraction.py
-│   ├── check_lab_ready.py
-│   ├── test_camera.py
-│   ├── collect_dataset.py
-│   ├── train_bonus_model.py
-│   ├── realtime_controller.py
-│   ├── data/
-│   │   └── gestures.csv
-│   ├── models/
-│   │   └── bonus_model.pkl          # model dołączony w wersji lab-ready
-│   └── reports/
-│       ├── confusion_matrix.png     # generowany po treningu
-│       └── validation_metrics.txt   # generowany po treningu
-└── MICM projekt/                    # lokalne środowisko Pythona, poza Gitem
-```
-
-`blobby-face-controller` zawiera kod projektu. `MICM projekt` jest tylko lokalnym środowiskiem Pythona z zainstalowanymi bibliotekami i nie trafia do Gita. Plików projektu nie należy trzymać w folderze środowiska.
-
-## Lab-ready quick start
-
-Model bonusu, dataset i raporty walidacyjne są dołączone do repozytorium. Na komputerze używanym do treningu nie trzeba ponownie zbierać danych ani trenować modelu.
-
-### Opcja A — pierwsze uruchomienie na nowym komputerze Windows
-
-1. Sklonuj repozytorium.
-2. Uruchom z katalogu głównego:
-
-   ```bat
-   setup_lab_windows.bat
-   ```
-
-3. Jeśli sanity check zakończy się komunikatem `READY`, uruchom:
-
-   ```bat
-   run_lab.bat
-   ```
-
-### Opcja B — instalacja ręczna w PowerShell
+## Setup
 
 ```powershell
-cd MICM_Projekt
 py -3.11 -m venv "MICM projekt"
-& ".\MICM projekt\Scripts\Activate.ps1"
-cd .\blobby-face-controller
-python -m pip install --upgrade pip
-pip install -r requirements.txt
-python check_lab_ready.py
-python realtime_controller.py
-```
-
-### Checklista przed meczem
-
-- `models/bonus_model.pkl` istnieje,
-- kamera działa i `check_lab_ready.py` pokazuje `READY`,
-- dwie osoby siedzą w kadrze,
-- lewa osoba to Player 1: obrót głowy steruje ruchem lewo/prawo,
-- prawa osoba to Player 2: uśmiech steruje skokiem, a głowa w dół bonusem,
-- okno gry ma focus — kliknij je przed rozpoczęciem,
-- `q` bezpiecznie zamyka kontroler i zwalnia klawisze.
-
-Model bonusu jest zapisany w repozytorium jako `models/bonus_model.pkl`. Nie trzeba trenować go ponownie, jeśli jako Player 2 występuje ta sama osoba co podczas zbierania danych. Przy innym oświetleniu, kamerze lub osobie można ponownie zebrać dataset przez `collect_dataset.py` i uruchomić `train_bonus_model.py`.
-
-## Instalacja
-
-Linux/macOS:
-
-```bash
-cd ~/projects/MICM_projekt/blobby-face-controller
-source ../venv_projektmicm/bin/activate
-python -m pip install --upgrade pip
+"MICM projekt\Scripts\activate"
+cd blobby-face-controller
 pip install -r requirements.txt
 ```
 
-Windows, jeśli środowisko jest w katalogu `MICM_projekt\MICM projekt`:
+## Run
 
 ```powershell
-cd "$env:USERPROFILE\projects\MICM_projekt\blobby-face-controller"
-& "..\MICM projekt\Scripts\Activate.ps1"
-python -m pip install --upgrade pip
-pip install -r requirements.txt
+python controller.py
 ```
 
-Przed uruchomieniem skryptów wejdź do katalogu `blobby-face-controller` i aktywuj właściwe środowisko Pythona.
+## Fast run
+
+```powershell
+python controller.py --width 320 --height 240 --no-overlay
+```
+
+## If camera does not open
+
+```powershell
+python controller.py --camera-index 1
+python controller.py --camera-backend msmf
+python controller.py --camera-backend default
+```
+
+## Benchmark
+
+```powershell
+python benchmark.py
+```
 
 ## Troubleshooting
 
-Jeśli po uruchomieniu `python test_camera.py` pojawia się błąd `AttributeError: module 'mediapipe' has no attribute 'solutions'`, to zwykle oznacza, że w środowisku jest zainstalowana wersja MediaPipe niezgodna z legacy API używanym przez ten projekt. Kod korzysta z `mp.solutions.face_mesh`, więc wymagamy wersji kompatybilnej z tym API: `mediapipe==0.10.21`.
-
-Naprawa środowiska:
-
-```bash
-pip uninstall mediapipe -y
-pip install mediapipe==0.10.21
-```
-
-Weryfikacja po instalacji:
-
-```bash
-python -c "import mediapipe as mp; print(mp.__version__); print(hasattr(mp, 'solutions'))"
-```
-
-Oczekiwany wynik to `0.10.21` oraz `True`.
-
-## Aktualny workflow
-
-Poniższe polecenia są potrzebne przy ponownym zbieraniu danych i treningu. Gotowa wersja lab-ready może od razu użyć `run_lab.bat`. Wszystkie polecenia uruchamiaj lokalnie z katalogu `blobby-face-controller`:
-
-1. Sprawdź kamerę i przypisanie graczy:
-
-   ```bash
-   python test_camera.py
-   ```
-
-2. Zbierz własny dataset gestu bonusowego:
-
-   ```bash
-   python collect_dataset.py --reset
-   ```
-
-   `neutral` oznacza normalną pozycję głowy, a `bonus_gesture` lekkie pochylenie głowy w dół. Zbierz minimum 50 próbek na klasę; zalecane jest 100-150.
-
-3. Wytrenuj i zweryfikuj model:
-
-   ```bash
-   python train_bonus_model.py
-   ```
-
-   Sprawdź w `reports/validation_metrics.txt`, czy `bonus_precision` jest większe niż `0.85`.
-
-4. Uruchom lokalny kontroler:
-
-   ```bash
-   python realtime_controller.py
-   ```
-
-5. Dopiero po przejściu tych kroków wykonaj test z Blobby Online.
-
-Plik `data/gestures.csv` zawiera dane treningowe: liczbowe cechy wyliczone z landmarków MediaPipe i etykiety klas. Nie jest finalnym modelem. Plik `models/bonus_model.pkl` jest wytrenowanym modelem SVM ładowanym przez `realtime_controller.py`.
-
-Colab lub Jupyter może służyć do analizy CSV i treningu modelu. Finalne sterowanie gry powinno jednak działać lokalnie, ponieważ wymaga kamery, overlayu OpenCV i symulacji klawiatury.
-
-## Uruchomienie
-
-Test kamery:
-
-```bash
-python test_camera.py
-```
-
-Zbieranie datasetu:
-
-```bash
-python collect_dataset.py
-```
-
-Opcja `--reset` usuwa dotychczasowe próbki i tworzy od nowa CSV z jednym poprawnym nagłówkiem:
-
-```bash
-python collect_dataset.py --reset
-```
-
-W oknie zbierania danych:
-
-- `n` zapisuje próbkę klasy `neutral`
-- `b` zapisuje próbkę klasy `bonus_gesture`
-- `1` zapisuje burst 50 próbek klasy `neutral`
-- `2` zapisuje burst 50 próbek klasy `bonus_gesture`
-- `q` kończy program
-
-Zbierz minimum 50 próbek na klasę. Najlepiej zebrać więcej, np. 80-150, z kilkoma wariantami pozycji głowy i oświetlenia.
-
-Trening modelu:
-
-```bash
-python train_bonus_model.py
-```
-
-Skrypt zapisze:
-
-- `models/bonus_model.pkl`
-- `reports/confusion_matrix.png`
-- `reports/validation_metrics.txt`
-
-Jeśli precision dla klasy bonusu jest poniżej `0.85`, zbierz lepszy dataset.
-
-Uruchomienie kontrolera:
-
-```bash
-python realtime_controller.py
-```
-
-## Trening samemu w domu
-
-1. Uruchom kolektor z wyczyszczeniem poprzedniego datasetu:
-
-   ```bash
-   python collect_dataset.py --reset
-   ```
-
-2. Zbieraj `neutral`: ustaw twarz normalnie, trzymaj głowę prosto i nie pochylaj jej w dół. Klawisz `n` zapisuje jedną próbkę, a `1` uruchamia burst 50 próbek.
-
-3. Zbieraj `bonus_gesture`: pochyl głowę lekko w dół jak przy krótkim skinieniu, nie wychodź z kadru i nie przesadzaj z ruchem. Klawisz `b` zapisuje jedną próbkę, a `2` uruchamia burst 50 próbek. Podczas burstu utrzymaj daną pozycję do jego zakończenia.
-
-4. Zbierz minimum 50 próbek `neutral` i 50 próbek `bonus_gesture`; lepiej zebrać 100-150 na klasę.
-
-5. Wytrenuj model:
-
-   ```bash
-   python train_bonus_model.py
-   ```
-
-6. Przetestuj sterowanie:
-
-   ```bash
-   python realtime_controller.py
-   ```
-
-7. Na labach osoba, na której trenowano model, powinna siedzieć jako Player 2. Player 2 uśmiecha się do skoku i pochyla głowę w dół do bonusu. Player 1 obraca głowę w lewo lub prawo, aby sterować ruchem.
-
-Skok nie jest trenowany: działa regułowo na podstawie `smile_score`. Bonus jest trenowany jako model ML, aby spełnić wymaganie projektu. `data/gestures.csv` zawiera cechy MediaPipe i etykiety, a nie obrazy. `models/bonus_model.pkl` jest finalnym modelem bonusu używanym przez kontroler realtime.
-
-Po tej zmianie ergonomii trzeba zebrać dataset od nowa i ponownie wytrenować model. Kontroler odrzuca starsze modele, które nie mają oznaczenia gestu `head_down_nod`.
-
-## Solo test mode
-
-Do testowania Playera 2 samemu ustaw w `config.py`:
-
-```python
-SOLO_TEST_MODE = True
-SOLO_TEST_ROLE = "player2"
-```
-
-Gdy kamera wykryje dokładnie jedną twarz, kontroler potraktuje ją jako Player 2. Pozwala to sprawdzić uśmiech jako skok oraz pochylenie głowy w dół jako bonus rozpoznawany przez model. Player 1 pozostaje nieaktywny, a jego klawisze ruchu są zwolnione.
-
-Klawisz `t` przełącza tryb solo podczas działania kontrolera. Ustawienie z `config.py` określa stan początkowy po każdym uruchomieniu.
-
-Na labach, gdy kamera wykryje dwie twarze, tryb solo jest automatycznie pomijany: lewa osoba zostaje Player 1, a prawa Player 2.
-
-## Domowy tryb solo — solo_face_play.py
-
-To nie jest główny tryb projektowy na laby. `solo_face_play.py` jest osobnym, eksperymentalnym skryptem do grania samemu twarzą przeciwko koledze online. Jedna twarz steruje całym naszym Blobbem, a `realtime_controller.py` zachowuje standardowy podział między dwie osoby.
-
-Uruchomienie:
-
-```bash
-python solo_face_play.py
-```
-
-Sterowanie:
-
-- głowa w lewo/prawo = ruch,
-- uśmiech = skok,
-- głowa w dół = bonus rozpoznawany przez model SVM.
-
-Przed grą:
-
-1. Otwórz Blobby Online w przeglądarce.
-2. Kliknij w okno gry, żeby przeglądarka miała focus.
-3. Uruchom lub pozostaw uruchomiony `solo_face_play.py`.
-4. Jeśli okno OpenCV przejęło focus albo gra nie reaguje, kliknij ponownie w okno gry.
-
-Kolega gra na swoim komputerze normalnie klawiaturą jako drugi gracz online. Do testowania wysyłanych klawiszy można użyć Notatnika: obrót głowy powinien wpisywać `A`/`D`, uśmiech `W`, a gest bonusu spację — zgodnie z domyślnymi wartościami w `config.py`.
-
-## Test klawiszy bez kamery
-
-Otwórz Notatnik albo inne pole tekstowe, uruchom poniższe polecenie i w ciągu 3 sekund kliknij pole tekstowe:
-
-```bash
-python key_test.py
-```
-
-Skrypt sprawdzi kolejno kombinacje `A+W`, `D+W`, `A+Space`, `D+Space`, `A+W+Space` i `D+W+Space`. Każdy test jest opisany w terminalu. Jeżeli kombinacje działają w Notatniku, ale nie w grze, kliknij ponownie okno Blobby Online — przeglądarka musi mieć focus.
-
-## Jak odpalić grę
-
-1. Wejdź na https://www.blobby-online.com/de
-2. Kliknij w okno gry, żeby przeglądarka przyjmowała klawisze.
-3. Uruchom `python realtime_controller.py`.
-4. Ustaw dwie osoby obok siebie w kamerze.
-5. Osoba po lewej stronie obrazu steruje ruchem.
-6. Osoba po prawej stronie obrazu steruje skokiem i bonusem.
-7. Graj.
-
-## Sterowanie
-
-Domyślne klawisze w `config.py`:
-
-- ruch w lewo: `a`
-- ruch w prawo: `d`
-- skok: `w`
-- bonus: `space`
-
-Domyślny tryb ruchu to:
-
-```python
-MOVE_CONTROL_MODE = "head_yaw"
-```
-
-Tryb `gaze` nie jest domyślny, bo oczy muszą śledzić piłkę i ekran.
-
-Sterowanie gestami:
-
-- Player 1: obrót głowy w lewo/prawo (`head_yaw`) = trzymanie `A`/`D` aż do powrotu głowy do martwej strefy,
-- Player 2: uśmiech (`smile_score`) = trzymanie `W`; brak uśmiechu zwalnia `W`,
-- Player 2: pochylenie głowy w dół = krótki TAP `Space`, klasyfikowany przez model SVM.
-
-Ruch i skok działają jak normalnie trzymane klawisze, a nie seria naciśnięć co klatkę. Bonus pozostaje pojedynczym tapnięciem z cooldownem. Jeśli `Space` nie działa w grze, najpierw kliknij jej okno, aby odzyskało focus.
-
-Kanały sterowania są niezależne: można jednocześnie trzymać jeden kierunek (`A` albo `D`) i skok (`W`), a w tym czasie wykonać tap `Space`. Kontroler zawsze zwalnia poprzedni kierunek przed wciśnięciem przeciwnego, więc `A` i `D` nie są trzymane razem.
-
-## Cechy
-
-Dataset nie zapisuje obrazów. Zapisywane są tylko cechy liczbowe z landmarków MediaPipe:
-
-- `mouth_open_ratio`
-- `mouth_width_ratio`
-- `left_eye_open_ratio`
-- `right_eye_open_ratio`
-- `eyebrow_raise_left`
-- `eyebrow_raise_right`
-- `head_yaw`
-- `head_pitch`
-- `head_roll`
-- `face_width`
-- `face_height`
-
-Cechy są normalizowane względem rozmiaru twarzy, żeby działały stabilniej przy różnych odległościach od kamery.
-
-## Kalibracja na labach
-
-Przed turniejem sprawdź i dostosuj w `config.py`:
-
-- `HEAD_YAW_ENTER_THRESHOLD`
-- `HEAD_YAW_EXIT_THRESHOLD`
-- `JUMP_MODE` (domyślnie `"smile"`)
-- `SMILE_THRESHOLD`
-- `JUMP_CONFIRM_FRAMES`
-- `CAMERA_INDEX`
-- `MOVE_LEFT_KEY`, `MOVE_RIGHT_KEY`, `JUMP_KEY`, `BONUS_KEY`
-- `BONUS_COOLDOWN_SECONDS`
-- ustawienie dwóch graczy w kamerze
-- poprawne przypisanie lewej osoby jako Gracz 1 i prawej osoby jako Gracz 2
-
-Najważniejsze jest dobranie progów do konkretnej kamerki, oświetlenia i odległości od laptopa. `HEAD_YAW_ENTER_THRESHOLD` określa mocniejsze wychylenie potrzebne do rozpoczęcia ruchu, a mniejszy `HEAD_YAW_EXIT_THRESHOLD` utrzymuje kierunek do powrotu głowy bliżej środka. Ta histereza ogranicza migotanie między ruchem i idle.
-
-Jeżeli `A`/`D` aktywuje się zbyt łatwo, zwiększ `HEAD_YAW_ENTER_THRESHOLD`. Jeżeli trudno wrócić do idle, zwiększ lub dostrój `HEAD_YAW_EXIT_THRESHOLD`. Stabilniejsze ustawienia startowe dla obecnej, znormalizowanej skali to:
-
-```python
-HEAD_YAW_ENTER_THRESHOLD = 0.085
-HEAD_YAW_EXIT_THRESHOLD = 0.045
-```
-
-W tym projekcie `head_yaw` nie jest podawany w stopniach, dlatego nie należy wpisywać tu wartości `18.0` i `10.0`. Aktualną wartość `head_yaw` można obserwować w overlayu obu kontrolerów.
-
-Jeśli neutralna twarz uruchamia skok, zwiększ `SMILE_THRESHOLD`. Jeśli wyraźny uśmiech nie uruchamia skoku, zmniejsz go nieznacznie i obserwuj `smile_score` w overlayu.
-
-## Stabilność
-
-Kontroler używa smoothingu i debounce:
-
-- akcja ruchu musi utrzymać się przez kilka klatek,
-- po potwierdzonym uśmiechu klawisz skoku jest trzymany aż do zaniku uśmiechu,
-- bonus wymaga kilku kolejnych klatek klasyfikacji ML i ma cooldown,
-- w normalnym trybie przy braku dwóch twarzy program puszcza wszystkie klawisze,
-- w trybie solo jedna twarz steruje wyłącznie akcjami Playera 2,
-- przy wyjściu `q` program zawsze puszcza klawisze.
-## Ultra fast experimental controller
-ASCII summary: this is a post-project experimental mode for maximum responsiveness in Blobby Online. It does not replace the report-ready controllers and does not change `realtime_controller.py` or `solo_face_play.py`.
-
-To jest eksperymentalny tryb dodany po oddaniu projektu. Nie zastÄ™puje wersji raportowej i nie zmienia dziaĹ‚ania `realtime_controller.py` ani `solo_face_play.py`. SĹ‚uĹĽy tylko do maksymalnej responsywnoĹ›ci w Blobby Online.
-
-Uruchomienie:
-
-```bash
-python ultra_fast_controller.py
-```
-
-Tryb bez overlay:
-
-```bash
-python ultra_fast_controller.py --no-overlay
-```
-
-Przydatne opcje:
-
-```bash
-python ultra_fast_controller.py --width 424 --height 240
-python ultra_fast_controller.py --bonus-mode rule
-python ultra_fast_controller.py --keyboard win32
-```
-
-Sterowanie:
-
-- glowa lewo/prawo = `A` / `D` hold
-- usmiech = `W` hold
-- glowa w dol = `Space` tap
-
-Najwazniejsze roznice wzgledem wersji raportowej:
-
-- jedna twarz steruje calym Blobbym,
-- kamera dziala w niskiej rozdzielczosci i probuje trzymac tylko najnowsza klatke,
-- MediaPipe FaceMesh pracuje w odchudzonej konfiguracji: `max_num_faces=1`, `refine_landmarks=False`,
-- brak rysowania landmarkow,
-- klawiatura ma backend `win32` przez `SendInput` z fallbackiem do `pynput`,
-- bonus ma dwa tryby: `model` i `rule`.
-
-Domyslnie `ultra_fast_controller.py` startuje w `--bonus-mode model`, czyli uzywa `models/bonus_model.pkl`. Jezeli modelu brakuje albo chcesz maksymalnie prosty eksperyment, przelacz na:
-
-```bash
-python ultra_fast_controller.py --bonus-mode rule
-```
-
-Tryb `rule` jest tylko eksperymentalnym przyspieszeniem po oddaniu projektu. Glowna wersja bonusu ML pozostaje w `realtime_controller.py`.
-
-Przed gra kliknij w okno Blobby, zeby przegladarka miala focus. Jezeli sterowanie dryfuje na `A` / `D`, zwieksz lokalne progi `DEFAULT_HEAD_YAW_ENTER` i `DEFAULT_HEAD_YAW_EXIT` w `ultra_fast_controller.py`. Jezeli ruch jest zbyt trudny do wywolania, zmniejsz `DEFAULT_HEAD_YAW_ENTER`.
-
-W trybie `--no-overlay` okno OpenCV nie jest otwierane, wiec zatrzymanie odbywa sie przez `Ctrl+C`.
-
-## Lite non-MediaPipe experimental controller
-
-This is an ultra-fast experimental controller that does not use MediaPipe. It does not replace the stable project controllers. If it feels unstable on your machine, go back to `solo_face_play.py` or `ultra_fast_controller.py`.
-
-Selected backend:
-
-- OpenCV-only was selected for the lowest dependency overhead and the simplest Windows setup.
-- The local OpenCV build already includes Haar cascades and legacy MOSSE tracking.
-- `FaceDetectorYN` is available in the API, but the YuNet model file is not bundled locally, so using it would add an extra external model asset and more setup friction.
-- The stable MediaPipe controllers remain available for project-compliant use.
-
-The lite controller uses:
-
-- Haar face detection for reacquire,
-- MOSSE tracking between detections for low latency,
-- lower-face ROI motion as the default jump signal,
-- rule-based head-down bonus tap,
-- Win32 `SendInput` keyboard output with `pynput` fallback.
-
-Run:
-
-```bash
-python lite_controller.py
-```
-
-Optional examples:
-
-```bash
-python lite_controller.py --no-overlay
-python lite_controller.py --width 320 --height 240
-python lite_controller.py --jump-mode smile_cascade
-```
-
-Before playing:
-
-1. Run `python lite_controller.py`.
-2. Keep a neutral face for the first second so calibration can lock your baseline.
-3. Click the Blobby game window so it has focus.
-4. Play.
-
-Controls:
-
-- face/head left-right translation = `A` / `D` hold
-- smile or fast lower-face change = `W` hold
-- head down = `Space` tap
-
-Runtime keys:
-
-- `q` = quit
-- `c` = recalibrate neutral
-- `o` = disable overlay
-- `r` = reset face tracking
-
-Notes:
-
-- If the game does not react, click the game window again.
-- If movement drifts, press `c` to recalibrate neutral.
-- If `mouth_roi_motion` feels too sensitive, try `--jump-mode smile_cascade`.
-- If the lite controller is not stable enough, switch back to `solo_face_play.py` or `ultra_fast_controller.py`.
-
-## Model fast controller - non-MediaPipe low-latency mode
-
-Haar/MOSSE lite mode turned out to be unstable for actual gameplay, so this mode uses a lightweight model-based detector instead of relying on tracking-only heuristics. The stable MediaPipe project controllers remain unchanged.
-
-Selected backend:
-
-- Recommended default backend: YuNet through OpenCV `FaceDetectorYN`.
-- This mode does not use MediaPipe.
-- It uses a lightweight ONNX face detector plus 5 facial landmarks.
-- The bundled model file is `models/face_detection_yunet_2023mar.onnx`.
-- Haar remains available only as a fallback or benchmark comparison backend.
-
-Why this backend won:
-
-- It has much lower dependency overhead than full face-mesh pipelines.
-- It gives a bounding box plus eyes, nose, and mouth corners, which is enough for more stable gameplay signals than Haar/MOSSE-only tracking.
-- It runs through the OpenCV build that is already used by this project, so no extra runtime like `onnxruntime` was needed.
-
-Run:
-
-```bash
-python model_fast_controller.py
-python model_fast_controller.py --no-overlay
-python model_fast_controller.py --detector yunet --width 320 --height 240
-python model_fast_controller.py --jump-mode smile_landmarks
-python benchmark_detectors.py
-```
-
-What it does:
-
-- left/right movement = `A` / `D` hold
-- jump = `W` hold
-- bonus = `Space` tap
-
-Calibration:
-
-- the controller auto-calibrates during the first 1-2 seconds
-- press `c` any time to recalibrate neutral
-- press `q` to quit
-
-YuNet model instructions:
-
-- expected path: `blobby-face-controller/models/face_detection_yunet_2023mar.onnx`
-- this repository now includes that ONNX file
-- if the file is missing or corrupted, the controller prints a clear error and tells you where it should be placed
-- to force a crude fallback only when needed, run with `--detector yunet --allow-haar-fallback`
-
-Recommended usage:
-
-1. Run `python model_fast_controller.py`.
-2. Keep a neutral face for the first second so calibration locks baseline nose and mouth geometry.
-3. Click the Blobby game window so it has focus.
-4. Play.
-
-Notes:
-
-- default jump mode is `smile_landmarks`, based on calibrated mouth-width change relative to face width
-- bonus is rule-based head-down detection with cooldown
-- `benchmark_detectors.py` compares YuNet and Haar and prints `Recommended backend: X`
-- if this mode still feels bad on your hardware, the stable MediaPipe controllers remain available unchanged
+- press `c` to recalibrate
+- if movement drifts, recalibrate with a neutral pose
+- if jump is too hard or too easy, tune `MOUTH_OPEN_ENTER_THRESHOLD` and `MOUTH_OPEN_EXIT_THRESHOLD` in `controller.py`
+- if the game is not reacting, click the browser game window
+
+## Notes
+
+- default jump mode is `mouth_open`
+- optional fallback remains available through `--jump-mode vertical_head`
+- the YuNet ONNX model is expected at `models/face_detection_yunet_2023mar.onnx`

@@ -1,4 +1,4 @@
-"""Detector backends for the model-based non-MediaPipe controller."""
+"""YuNet face detector wrapper used by the final one-player controller."""
 
 from __future__ import annotations
 
@@ -36,14 +36,6 @@ class DetectedFace:
         return float(self.bbox[3])
 
     @property
-    def face_center_x(self) -> float:
-        return self.center_x
-
-    @property
-    def face_center_y(self) -> float:
-        return self.center_y
-
-    @property
     def has_landmarks(self) -> bool:
         return self.landmarks is not None and len(self.landmarks) >= 5
 
@@ -68,14 +60,7 @@ class DetectedFace:
         return None if not self.has_landmarks else self.landmarks[4]
 
 
-class BaseFaceDetector:
-    backend_name = "base"
-
-    def detect(self, frame_bgr: np.ndarray) -> tuple[DetectedFace | None, float]:
-        raise NotImplementedError
-
-
-class YuNetFaceDetector(BaseFaceDetector):
+class YuNetFaceDetector:
     backend_name = "yunet"
 
     def __init__(
@@ -88,14 +73,11 @@ class YuNetFaceDetector(BaseFaceDetector):
     ) -> None:
         self.model_path = Path(model_path)
         self.input_size = tuple(int(v) for v in input_size)
-        self.score_threshold = score_threshold
-        self.nms_threshold = nms_threshold
-        self.top_k = top_k
 
         if not self.model_path.exists():
             raise FileNotFoundError(
                 f"Missing YuNet ONNX model. Expected: {self.model_path}. "
-                "Download the official YuNet model and place it there."
+                "Place face_detection_yunet_2023mar.onnx in the models directory."
             )
 
         if not hasattr(getattr(cv2, "FaceDetectorYN", object()), "create"):
@@ -105,9 +87,9 @@ class YuNetFaceDetector(BaseFaceDetector):
             str(self.model_path),
             "",
             self.input_size,
-            self.score_threshold,
-            self.nms_threshold,
-            self.top_k,
+            score_threshold,
+            nms_threshold,
+            top_k,
         )
 
     def detect(self, frame_bgr: np.ndarray) -> tuple[DetectedFace | None, float]:
@@ -127,81 +109,19 @@ class YuNetFaceDetector(BaseFaceDetector):
         best_row = max(faces, key=lambda row: float(row[14]))
         bbox = (float(best_row[0]), float(best_row[1]), float(best_row[2]), float(best_row[3]))
         landmarks = best_row[4:14].reshape(5, 2).astype(np.float32)
-        detected = DetectedFace(
+        return DetectedFace(
             bbox=bbox,
             score=float(best_row[14]),
             landmarks=landmarks,
             backend=self.backend_name,
-        )
-        return detected, float(elapsed_ms)
-
-
-class HaarFaceDetector(BaseFaceDetector):
-    backend_name = "haar"
-
-    def __init__(self) -> None:
-        self._cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_alt2.xml")
-        if self._cascade.empty():
-            raise RuntimeError("Cannot load haarcascade_frontalface_alt2.xml")
-
-    def detect(self, frame_bgr: np.ndarray) -> tuple[DetectedFace | None, float]:
-        gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
-        tick0 = cv2.getTickCount()
-        faces = self._cascade.detectMultiScale(
-            gray,
-            scaleFactor=1.1,
-            minNeighbors=5,
-            minSize=(40, 40),
-        )
-        elapsed_ms = (cv2.getTickCount() - tick0) * 1000.0 / cv2.getTickFrequency()
-
-        if len(faces) == 0:
-            return None, float(elapsed_ms)
-
-        best = max(faces, key=lambda rect: rect[2] * rect[3])
-        x, y, w, h = [float(value) for value in best]
-        landmarks = np.array(
-            [
-                [x + w * 0.32, y + h * 0.37],
-                [x + w * 0.68, y + h * 0.37],
-                [x + w * 0.50, y + h * 0.56],
-                [x + w * 0.38, y + h * 0.76],
-                [x + w * 0.62, y + h * 0.76],
-            ],
-            dtype=np.float32,
-        )
-        detected = DetectedFace(
-            bbox=(x, y, w, h),
-            score=1.0,
-            landmarks=landmarks,
-            backend=self.backend_name,
-        )
-        return detected, float(elapsed_ms)
-
-
-def recommended_default_detector(model_path: Path | None = None) -> str:
-    path = DEFAULT_YUNET_MODEL if model_path is None else Path(model_path)
-    if path.exists() and hasattr(getattr(cv2, "FaceDetectorYN", object()), "create"):
-        return "yunet"
-    return "haar"
+        ), float(elapsed_ms)
 
 
 def create_face_detector(
     detector_name: str,
     input_size: tuple[int, int],
     model_path: Path | None = None,
-    allow_haar_fallback: bool = False,
-) -> BaseFaceDetector:
-    selected = detector_name.strip().lower()
-    path = DEFAULT_YUNET_MODEL if model_path is None else Path(model_path)
-
-    if selected == "yunet":
-        try:
-            return YuNetFaceDetector(path, input_size=input_size)
-        except Exception:
-            if not allow_haar_fallback:
-                raise
-            return HaarFaceDetector()
-    if selected == "haar":
-        return HaarFaceDetector()
-    raise ValueError(f"Unsupported detector backend: {detector_name}")
+) -> YuNetFaceDetector:
+    if detector_name.strip().lower() != "yunet":
+        raise ValueError(f"Unsupported detector backend: {detector_name}. Only 'yunet' is supported.")
+    return YuNetFaceDetector(DEFAULT_YUNET_MODEL if model_path is None else Path(model_path), input_size=input_size)

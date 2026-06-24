@@ -1,4 +1,4 @@
-"""Low-latency camera capture for the non-MediaPipe lite controller."""
+"""Low-latency threaded camera capture that always exposes the newest frame."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ def _ewma(previous: float, current: float, alpha: float = 0.2) -> float:
 
 
 class LatestFrameCamera:
-    """Continuously grab frames and keep only the newest one."""
+    """Continuously read frames and keep only the newest one."""
 
     def __init__(
         self,
@@ -24,13 +24,13 @@ class LatestFrameCamera:
         width: int,
         height: int,
         fps: int,
-        prefer_dshow: bool = True,
+        camera_backend: str = "auto",
     ) -> None:
         self.camera_index = camera_index
         self.width = width
         self.height = height
         self.fps = fps
-        self.prefer_dshow = prefer_dshow
+        self.camera_backend = camera_backend.strip().lower()
 
         self._capture = None
         self._thread = None
@@ -57,7 +57,7 @@ class LatestFrameCamera:
             return False
 
         self._capture = capture
-        self._thread = threading.Thread(target=self._reader_loop, name="lite-camera-reader", daemon=True)
+        self._thread = threading.Thread(target=self._reader_loop, name="blobby-camera-reader", daemon=True)
         self._thread.start()
         return True
 
@@ -75,14 +75,31 @@ class LatestFrameCamera:
             self._capture = None
 
     def _candidate_backends(self) -> list[tuple[int | None, str]]:
-        candidates: list[tuple[int | None, str]] = []
-        if self.prefer_dshow and sys.platform.startswith("win") and hasattr(cv2, "CAP_DSHOW"):
-            candidates.append((cv2.CAP_DSHOW, "CAP_DSHOW"))
-        candidates.append((None, "default"))
-        return candidates
+        backend_map: dict[str, tuple[int | None, str]] = {
+            "default": (None, "default"),
+        }
+        if sys.platform.startswith("win") and hasattr(cv2, "CAP_DSHOW"):
+            backend_map["dshow"] = (cv2.CAP_DSHOW, "dshow")
+        if sys.platform.startswith("win") and hasattr(cv2, "CAP_MSMF"):
+            backend_map["msmf"] = (cv2.CAP_MSMF, "msmf")
+
+        if self.camera_backend == "auto":
+            ordered = ("dshow", "msmf", "default")
+            return [backend_map[name] for name in ordered if name in backend_map]
+
+        if self.camera_backend in backend_map:
+            return [backend_map[self.camera_backend]]
+
+        raise ValueError("Unsupported camera backend. Expected one of: auto, dshow, msmf, default")
 
     def _open_capture(self):
-        for backend, backend_name in self._candidate_backends():
+        try:
+            candidates = self._candidate_backends()
+        except ValueError as exc:
+            self._error = str(exc)
+            return None
+
+        for backend, backend_name in candidates:
             capture = cv2.VideoCapture(self.camera_index, backend) if backend is not None else cv2.VideoCapture(self.camera_index)
             if not capture or not capture.isOpened():
                 if capture:
@@ -94,7 +111,7 @@ class LatestFrameCamera:
             self._error = ""
             return capture
 
-        self._error = f"Cannot open camera index {self.camera_index}"
+        self._error = f"Cannot open camera index {self.camera_index} with backend {self.camera_backend}"
         return None
 
     def _configure_capture(self, capture) -> None:

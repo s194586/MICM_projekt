@@ -2,6 +2,9 @@ MICM projekt/
 venv_projektmicm/
 .venv/
 venv/
+Lib/
+Scripts/
+site-packages/
 __pycache__/
 *.pyc
 *.pyo
@@ -10,4 +13,3 @@ __pycache__/
 .DS_Store
 .vscode/
 *.log
-blobby-face-controller/models/*.pkl

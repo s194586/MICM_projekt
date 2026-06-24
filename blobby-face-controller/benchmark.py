@@ -1,4 +1,4 @@
-"""Quick camera benchmark for available detector backends."""
+"""Quick YuNet benchmark for camera settings and detector latency."""
 
 from __future__ import annotations
 
@@ -8,17 +8,17 @@ import time
 
 import cv2
 
-import config
-from model_fast_capture import LatestFrameCamera
-from model_fast_detector import DEFAULT_YUNET_MODEL, create_face_detector
+from capture import LatestFrameCamera
+from detector import DEFAULT_YUNET_MODEL, create_face_detector
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Benchmark fast face detector backends.")
-    parser.add_argument("--camera-index", type=int, default=config.CAMERA_INDEX)
+    parser = argparse.ArgumentParser(description="Benchmark YuNet detector latency and face detection rate.")
+    parser.add_argument("--camera-index", type=int, default=0)
     parser.add_argument("--width", type=int, default=320)
     parser.add_argument("--height", type=int, default=240)
     parser.add_argument("--fps", type=int, default=60)
+    parser.add_argument("--camera-backend", choices=("auto", "msmf", "dshow", "default"), default="auto")
     parser.add_argument("--seconds", type=float, default=10.0)
     parser.add_argument("--model-path", default=str(DEFAULT_YUNET_MODEL))
     return parser
@@ -32,8 +32,7 @@ def percentile(values: list[float], ratio: float) -> float:
     return float(ordered[index])
 
 
-def benchmark_backend(
-    backend_name: str,
+def benchmark_yunet(
     camera: LatestFrameCamera,
     duration_seconds: float,
     width: int,
@@ -41,14 +40,9 @@ def benchmark_backend(
     model_path: str,
 ) -> dict[str, float | str] | None:
     try:
-        detector = create_face_detector(
-            backend_name,
-            input_size=(width, height),
-            model_path=model_path,
-            allow_haar_fallback=False,
-        )
+        detector = create_face_detector("yunet", input_size=(width, height), model_path=model_path)
     except Exception as exc:
-        print(f"{backend_name}: unavailable ({exc})")
+        print(f"yunet: unavailable ({exc})")
         return None
 
     detection_times: list[float] = []
@@ -73,7 +67,7 @@ def benchmark_backend(
 
     elapsed = max(time.perf_counter() - start, 1e-6)
     result = {
-        "backend": backend_name,
+        "backend": "yunet",
         "fps": frame_count / elapsed,
         "avg_ms": statistics.mean(detection_times) if detection_times else 0.0,
         "p95_ms": percentile(detection_times, 0.95),
@@ -82,24 +76,31 @@ def benchmark_backend(
         "detection_rate": (detection_count / frame_count) if frame_count else 0.0,
     }
     print(
-        f"{backend_name}: fps={result['fps']:.1f} avg_ms={result['avg_ms']:.2f} "
+        f"yunet: fps={result['fps']:.1f} avg_ms={result['avg_ms']:.2f} "
         f"p95_ms={result['p95_ms']:.2f} detections={detection_count}/{frame_count}"
     )
     return result
 
 
-def choose_recommendation(results: list[dict[str, float | str]]) -> str:
-    if not results:
-        return "none"
+def choose_recommendation(result: dict[str, float | str] | None, width: int, height: int, camera_backend: str) -> str:
+    if result is None:
+        return "YuNet could not start. Verify the ONNX model path and OpenCV build first."
 
-    def score(item: dict[str, float | str]) -> tuple[float, float, float]:
-        detection_rate = float(item["detection_rate"])
-        avg_ms = float(item["avg_ms"])
-        fps = float(item["fps"])
-        return (detection_rate, -avg_ms, fps)
+    fps = float(result["fps"])
+    p95_ms = float(result["p95_ms"])
+    detection_rate = float(result["detection_rate"])
 
-    best = max(results, key=score)
-    return str(best["backend"])
+    if detection_rate < 0.70:
+        return "Detection rate is low. Improve lighting, keep one face centered, and recalibrate with a neutral pose."
+    if p95_ms > 20.0 or fps < 45.0:
+        return (
+            "Latency is higher than the fast target. Prefer "
+            "`python controller.py --width 320 --height 240 --camera-backend dshow --no-overlay`."
+        )
+    return (
+        f"Current settings look good. Recommended run: "
+        f"`python controller.py --width {width} --height {height} --camera-backend {camera_backend}`."
+    )
 
 
 def main() -> int:
@@ -109,28 +110,21 @@ def main() -> int:
         width=args.width,
         height=args.height,
         fps=args.fps,
-        prefer_dshow=True,
+        camera_backend=args.camera_backend,
     )
     if not camera.start():
         print(f"ERROR: {camera.error}")
         return 1
 
     try:
-        results: list[dict[str, float | str]] = []
-        for backend_name in ("yunet", "haar"):
-            result = benchmark_backend(
-                backend_name,
-                camera,
-                duration_seconds=args.seconds,
-                width=args.width,
-                height=args.height,
-                model_path=args.model_path,
-            )
-            if result is not None:
-                results.append(result)
-
-        recommendation = choose_recommendation(results)
-        print(f"Recommended backend: {recommendation}")
+        result = benchmark_yunet(
+            camera,
+            duration_seconds=args.seconds,
+            width=args.width,
+            height=args.height,
+            model_path=args.model_path,
+        )
+        print(f"Recommendation: {choose_recommendation(result, args.width, args.height, args.camera_backend)}")
     finally:
         camera.close()
         cv2.destroyAllWindows()
