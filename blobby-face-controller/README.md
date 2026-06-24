@@ -505,3 +505,64 @@ Notes:
 - If movement drifts, press `c` to recalibrate neutral.
 - If `mouth_roi_motion` feels too sensitive, try `--jump-mode smile_cascade`.
 - If the lite controller is not stable enough, switch back to `solo_face_play.py` or `ultra_fast_controller.py`.
+
+## Model fast controller - non-MediaPipe low-latency mode
+
+Haar/MOSSE lite mode turned out to be unstable for actual gameplay, so this mode uses a lightweight model-based detector instead of relying on tracking-only heuristics. The stable MediaPipe project controllers remain unchanged.
+
+Selected backend:
+
+- Recommended default backend: YuNet through OpenCV `FaceDetectorYN`.
+- This mode does not use MediaPipe.
+- It uses a lightweight ONNX face detector plus 5 facial landmarks.
+- The bundled model file is `models/face_detection_yunet_2023mar.onnx`.
+- Haar remains available only as a fallback or benchmark comparison backend.
+
+Why this backend won:
+
+- It has much lower dependency overhead than full face-mesh pipelines.
+- It gives a bounding box plus eyes, nose, and mouth corners, which is enough for more stable gameplay signals than Haar/MOSSE-only tracking.
+- It runs through the OpenCV build that is already used by this project, so no extra runtime like `onnxruntime` was needed.
+
+Run:
+
+```bash
+python model_fast_controller.py
+python model_fast_controller.py --no-overlay
+python model_fast_controller.py --detector yunet --width 320 --height 240
+python model_fast_controller.py --jump-mode smile_landmarks
+python benchmark_detectors.py
+```
+
+What it does:
+
+- left/right movement = `A` / `D` hold
+- jump = `W` hold
+- bonus = `Space` tap
+
+Calibration:
+
+- the controller auto-calibrates during the first 1-2 seconds
+- press `c` any time to recalibrate neutral
+- press `q` to quit
+
+YuNet model instructions:
+
+- expected path: `blobby-face-controller/models/face_detection_yunet_2023mar.onnx`
+- this repository now includes that ONNX file
+- if the file is missing or corrupted, the controller prints a clear error and tells you where it should be placed
+- to force a crude fallback only when needed, run with `--detector yunet --allow-haar-fallback`
+
+Recommended usage:
+
+1. Run `python model_fast_controller.py`.
+2. Keep a neutral face for the first second so calibration locks baseline nose and mouth geometry.
+3. Click the Blobby game window so it has focus.
+4. Play.
+
+Notes:
+
+- default jump mode is `smile_landmarks`, based on calibrated mouth-width change relative to face width
+- bonus is rule-based head-down detection with cooldown
+- `benchmark_detectors.py` compares YuNet and Haar and prints `Recommended backend: X`
+- if this mode still feels bad on your hardware, the stable MediaPipe controllers remain available unchanged
