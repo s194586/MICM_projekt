@@ -19,16 +19,10 @@ except Exception as exc:  # pragma: no cover - desktop dependent.
 
 KEYEVENTF_KEYUP = 0x0002
 KEYEVENTF_SCANCODE = 0x0008
+KEYEVENTF_EXTENDEDKEY = 0x0001
 INPUT_KEYBOARD = 1
 MAPVK_VK_TO_VSC = 0
 ULONG_PTR = ctypes.c_ulonglong if ctypes.sizeof(ctypes.c_void_p) == 8 else ctypes.c_ulong
-
-VK_CODES = {
-    "a": 0x41,
-    "d": 0x44,
-    "w": 0x57,
-    "space": 0x20,
-}
 
 PYNPUT_SPECIAL_KEYS = {
     "space": "space",
@@ -36,6 +30,25 @@ PYNPUT_SPECIAL_KEYS = {
     "right": "right",
     "up": "up",
     "down": "down",
+}
+
+
+@dataclass(frozen=True, slots=True)
+class KeySpec:
+    vk_code: int
+    display_name: str
+    extended: bool = False
+
+
+KEY_SPECS = {
+    "a": KeySpec(0x41, "A"),
+    "d": KeySpec(0x44, "D"),
+    "w": KeySpec(0x57, "W"),
+    "space": KeySpec(0x20, "SPACE"),
+    "left": KeySpec(0x25, "LEFT", extended=True),
+    "right": KeySpec(0x27, "RIGHT", extended=True),
+    "up": KeySpec(0x26, "UP", extended=True),
+    "down": KeySpec(0x28, "DOWN", extended=True),
 }
 
 
@@ -88,19 +101,21 @@ class Win32KeyboardBackend:
             return
 
         normalized = key_name.lower()
-        vk_code = VK_CODES.get(normalized)
-        if vk_code is None:
+        key_spec = KEY_SPECS.get(normalized)
+        if key_spec is None:
             self.status.enabled = False
             self.status.error = f"Unsupported win32 key: {key_name}"
             return
 
-        scan_code = self._map_virtual_key(vk_code, MAPVK_VK_TO_VSC)
+        scan_code = self._map_virtual_key(key_spec.vk_code, MAPVK_VK_TO_VSC)
         if scan_code == 0:
             self.status.enabled = False
             self.status.error = f"Cannot map scan code for: {key_name}"
             return
 
         flags = KEYEVENTF_SCANCODE
+        if key_spec.extended:
+            flags |= KEYEVENTF_EXTENDEDKEY
         if is_key_up:
             flags |= KEYEVENTF_KEYUP
 
@@ -164,6 +179,7 @@ class KeyboardController:
         self._backend = self._build_backend(preferred_backend)
         self._held_keys: set[str] = set()
         self._pending_taps: dict[str, float] = {}
+        self._last_event = "NONE"
 
     def press(self, key_name: str) -> None:
         self._backend.press(key_name)
@@ -175,11 +191,13 @@ class KeyboardController:
         if key_name not in self._held_keys:
             self.press(key_name)
             self._held_keys.add(key_name)
+            self._last_event = f"{self._event_label(key_name)}_DOWN"
 
     def release_hold(self, key_name: str) -> None:
         if key_name in self._held_keys:
             self._held_keys.remove(key_name)
             self.release(key_name)
+            self._last_event = f"{self._event_label(key_name)}_UP"
 
     def set_movement(self, action: str, left_key: str, right_key: str) -> None:
         if action == "LEFT":
@@ -204,9 +222,9 @@ class KeyboardController:
         if current_release is None:
             self.press(key_name)
             self._pending_taps[key_name] = release_at
-            return
-        if release_at > current_release:
+        elif release_at > current_release:
             self._pending_taps[key_name] = release_at
+        self._last_event = f"{self._event_label(key_name)}_TAP"
 
     def update(self, now: float) -> None:
         due_keys = [key_name for key_name, release_at in self._pending_taps.items() if now >= release_at]
@@ -229,6 +247,18 @@ class KeyboardController:
         if self._backend.status.error:
             return f"{self._backend.status.name} disabled: {self._backend.status.error[:48]}"
         return f"{self._backend.status.name} disabled"
+
+    def backend_name(self) -> str:
+        return self._backend.status.name
+
+    def last_event(self) -> str:
+        return self._last_event
+
+    def _event_label(self, key_name: str) -> str:
+        key_spec = KEY_SPECS.get(key_name.strip().lower())
+        if key_spec is not None:
+            return key_spec.display_name
+        return key_name.strip().upper()
 
     def _build_backend(self, preferred_backend: str):
         normalized = preferred_backend.strip().lower()

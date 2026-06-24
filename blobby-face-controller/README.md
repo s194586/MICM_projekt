@@ -9,8 +9,8 @@ YuNet gives only 5 landmarks, so mouth opening is detected using an additional l
 
 ## Controls
 
-- face left or right = `A` / `D` hold
-- mouth open = `W` hold
+- face left or right = hold left/right movement
+- mouth open = hold jump
 - face or head down = `Space` tap bonus
 - `q` = quit
 - `c` = recalibrate closed mouth
@@ -18,7 +18,7 @@ YuNet gives only 5 landmarks, so mouth opening is detected using an additional l
 - `]` = raise jump threshold
 - `o` = overlay toggle
 
-`A` and `D` are never held together. `W` is independent from movement. `Space` taps without releasing `A`, `D`, or `W`. If no face is detected, the controller releases all keys.
+`A` and `D` are never held together. Jump hold is independent from movement. `Space` taps without releasing movement or jump. If no face is detected, the controller releases all keys.
 
 ## Setup
 
@@ -35,11 +35,37 @@ pip install -r requirements.txt
 python controller.py
 ```
 
-At startup keep a neutral face with closed mouth for about 1 second.
+Then:
 
-## Debug landmarks
+1. Wait for the overlay.
+2. Click the Blobby window during the startup countdown.
+3. Do not click the overlay again.
+4. Play.
+
+Default keyboard output is Win32 `SendInput` with scan codes.
+Default mapping is `A` / `D` / `W` / `Space`.
+
+## Keyboard fallback
+
+If Blobby does not react to the default backend:
 
 ```powershell
+python controller.py --keyboard pynput
+```
+
+## Arrow key mapping
+
+If Blobby uses arrows instead of `A` / `D` / `W`:
+
+```powershell
+python controller.py --left-key left --right-key right --jump-key up --bonus-key space
+```
+
+## Useful options
+
+```powershell
+python controller.py --focus-delay 0
+python controller.py --jump-enter 0.30 --jump-exit 0.18
 python controller.py --debug-landmarks
 ```
 
@@ -51,7 +77,6 @@ python controller.py --jump-mode calibrated_smile
 python controller.py --jump-mode mouth_open
 python controller.py --jump-mode smile_or_mouth_open
 python controller.py --jump-mode vertical_head_up
-python controller.py --jump-enter 0.30 --jump-exit 0.18
 ```
 
 `vertical_head_up` is only an experimental fallback and is not recommended for gameplay.
@@ -76,13 +101,13 @@ python benchmark.py
 - if jump is too hard to trigger, press `[`
 - if jump triggers by itself, press `]`
 - if movement drifts, recalibrate with a neutral pose
-- if the game is not reacting, click the browser game window
-- if you want a fallback, try `python controller.py --jump-mode calibrated_smile`
-- if you want the older ROI fallback, try `python controller.py --jump-mode mouth_open`
+- if the game is not reacting, restart and click the browser game window during the countdown
+- if the default backend still does not work, try `python controller.py --keyboard pynput`
 
 ## Notes
 
 - default jump mode is `mouth_landmarks`
+- default keyboard backend is `win32`
 - face detection stays on OpenCV YuNet ONNX
 - mouth opening is measured from real mouth landmarks, not head-up
 - the landmark model is expected at `models/pfld_68_face_landmarks.onnx`

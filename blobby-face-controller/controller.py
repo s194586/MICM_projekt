@@ -34,6 +34,7 @@ DEFAULT_KEYBOARD_BACKEND = "win32"
 DEFAULT_OVERLAY = True
 DEFAULT_CALIBRATION_SECONDS = 1.2
 DEFAULT_JUMP_MODE = "mouth_landmarks"
+DEFAULT_FOCUS_DELAY_SECONDS = 3.0
 
 DEFAULT_MOVE_ENTER_THRESHOLD = 0.075
 DEFAULT_MOVE_EXIT_THRESHOLD = 0.035
@@ -47,10 +48,10 @@ DEFAULT_BONUS_COOLDOWN_SECONDS = 0.9
 DEFAULT_SPACE_TAP_SECONDS = 0.03
 SUMMARY_INTERVAL_SECONDS = 2.0
 
-MOVE_LEFT_KEY = "a"
-MOVE_RIGHT_KEY = "d"
-JUMP_KEY = "w"
-BONUS_KEY = "space"
+DEFAULT_LEFT_KEY = "a"
+DEFAULT_RIGHT_KEY = "d"
+DEFAULT_JUMP_KEY = "w"
+DEFAULT_BONUS_KEY = "space"
 LANDMARK_REQUIRED_MODES = {"mouth_landmarks"}
 SMILE_CALIBRATION_MODES = {"calibrated_smile", "smile_or_mouth_open"}
 
@@ -70,6 +71,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--camera-backend", choices=("auto", "msmf", "dshow", "default"), default=DEFAULT_CAMERA_BACKEND)
     parser.add_argument("--detector", choices=("yunet",), default=DEFAULT_DETECTOR)
     parser.add_argument("--keyboard", choices=("win32", "pynput"), default=DEFAULT_KEYBOARD_BACKEND)
+    parser.add_argument("--left-key", choices=("a", "left"), default=DEFAULT_LEFT_KEY)
+    parser.add_argument("--right-key", choices=("d", "right"), default=DEFAULT_RIGHT_KEY)
+    parser.add_argument("--jump-key", choices=("w", "up"), default=DEFAULT_JUMP_KEY)
+    parser.add_argument("--bonus-key", choices=("space",), default=DEFAULT_BONUS_KEY)
     parser.add_argument(
         "--jump-mode",
         choices=("mouth_landmarks", "calibrated_smile", "mouth_open", "smile_or_mouth_open", "vertical_head_up"),
@@ -77,6 +82,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--jump-enter", type=float, default=DEFAULT_JUMP_ENTER_THRESHOLD)
     parser.add_argument("--jump-exit", type=float, default=DEFAULT_JUMP_EXIT_THRESHOLD)
+    parser.add_argument("--focus-delay", type=float, default=DEFAULT_FOCUS_DELAY_SECONDS)
     parser.add_argument("--landmark-model-path", type=Path, default=DEFAULT_LANDMARK_MODEL)
     parser.add_argument("--debug-landmarks", action="store_true")
     parser.add_argument("--no-overlay", action="store_true")
@@ -117,6 +123,8 @@ def poll_runtime_key(overlay_enabled: bool) -> str | None:
         key = cv2.waitKey(1) & 0xFF
         if key != 255:
             return chr(key).lower()
+        if msvcrt is not None and msvcrt.kbhit():  # pragma: no branch - platform specific.
+            return msvcrt.getwch().lower()
         return None
 
     if msvcrt is not None and msvcrt.kbhit():  # pragma: no branch - platform specific.
@@ -233,6 +241,8 @@ def main() -> int:
     mouth_open_norm = 0.0
     mouth_ratio = 0.0
     landmark_detected = False
+    input_enable_at = time.perf_counter() + max(0.0, float(args.focus_delay))
+    input_enabled_announced = False
 
     print(
         f"Controller started | capture={camera.backend_name} | detector={detector.backend_name} "
@@ -244,6 +254,8 @@ def main() -> int:
     print("Keep a neutral face with closed mouth for the first 1-2 seconds, or press c later to recalibrate.")
     if args.jump_mode in SMILE_CALIBRATION_MODES:
         print("Smile fallback is available, but not required for gameplay. Use m only if you want calibrated_smile.")
+    if args.focus_delay > 0.0:
+        print(f"Click Blobby window now. Input starts in {args.focus_delay:.1f}s.")
     if not overlay_enabled:
         print("Overlay disabled. Use q/c/[ / ]/o in the console, or Ctrl+C to stop.")
 
@@ -251,6 +263,10 @@ def main() -> int:
         while True:
             loop_started_at = time.perf_counter()
             keyboard.update(loop_started_at)
+            input_enabled = loop_started_at >= input_enable_at
+            if input_enabled and not input_enabled_announced:
+                print("Input enabled.")
+                input_enabled_announced = True
 
             sequence, frame, frame_timestamp, raw_capture_ms = camera.latest()
             if frame is None or sequence == last_sequence:
@@ -335,20 +351,27 @@ def main() -> int:
                         enter_threshold=DEFAULT_MOVE_ENTER_THRESHOLD,
                         exit_threshold=DEFAULT_MOVE_EXIT_THRESHOLD,
                     )
-                    keyboard.set_movement(current_move, MOVE_LEFT_KEY, MOVE_RIGHT_KEY)
+                    if input_enabled:
+                        keyboard.set_movement(current_move, args.left_key, args.right_key)
+                    else:
+                        keyboard.release_all()
 
                     smile_raw = signals.smile_raw
                     smile_norm = signals.smile_norm
                     mouth_open_norm = signals.mouth_open_norm
                     mouth_ratio = signals.mouth_landmark_ratio
                     jump_state = jump_hold.update(select_jump_signal(signals, args.jump_mode))
-                    keyboard.set_hold(JUMP_KEY, jump_state)
+                    if input_enabled:
+                        keyboard.set_hold(args.jump_key, jump_state)
 
                     bonus_active = signals.bonus >= DEFAULT_BONUS_ENTER_THRESHOLD
-                    if signals.bonus <= DEFAULT_BONUS_EXIT_THRESHOLD:
+                    if input_enabled:
+                        if signals.bonus <= DEFAULT_BONUS_EXIT_THRESHOLD:
+                            bonus_tap.reset()
+                        if bonus_tap.update(bonus_active, loop_started_at):
+                            keyboard.tap(args.bonus_key, loop_started_at, DEFAULT_SPACE_TAP_SECONDS)
+                    else:
                         bonus_tap.reset()
-                    if bonus_tap.update(bonus_active, loop_started_at):
-                        keyboard.tap(BONUS_KEY, loop_started_at, DEFAULT_SPACE_TAP_SECONDS)
                 else:
                     current_move = IDLE
                     jump_state = False
@@ -364,7 +387,7 @@ def main() -> int:
 
             cooldown_left = bonus_tap.cooldown_left(loop_started_at)
             bonus_text = f"COOLDOWN {cooldown_left:.1f}s" if cooldown_left > 0.0 and not bonus_tap.armed else "READY"
-            move_text = current_move if neutral_calibration is not None and calibration_mode is None else "CALIBRATING"
+            move_text = current_move
             jump_text = "HELD" if jump_state else "RELEASED"
 
             processing_finished_at = time.perf_counter()
@@ -372,39 +395,42 @@ def main() -> int:
 
             threshold_text = f"{jump_enter_threshold:.2f}/{jump_exit_threshold:.2f}"
             neutral_ready_text = "yes" if neutral_calibration is not None else "no"
+            focus_seconds_left = max(0.0, input_enable_at - loop_started_at)
+            click_prompt = f"Click Blobby window now ({focus_seconds_left:.1f}s)" if not input_enabled else ""
 
             if overlay_enabled:
                 if args.debug_landmarks:
                     draw_debug_landmarks(frame, current_landmarks)
+                overlay_lines = [
+                    (f"Keyboard: {keyboard.status_text()}", (230, 230, 230)),
+                    (f"Last key event: {keyboard.last_event()}", (255, 220, 80)),
+                    (f"Move: {move_text}", (0, 220, 255)),
+                    (f"Jump: {jump_text}", (80, 255, 80)),
+                    (f"Bonus: {bonus_text}", (255, 220, 80)),
+                    (f"Jump mode: {args.jump_mode}", (230, 230, 230)),
+                    (f"Threshold: {threshold_text}", (230, 230, 230)),
+                    (f"Mouth ratio: {mouth_ratio:.3f}", (255, 220, 80)),
+                    (f"Face: {'yes' if face_detected else 'no'} | Landmark: {'yes' if landmark_detected else 'no'}", (230, 230, 230)),
+                    (f"Neutral closed-mouth: {neutral_ready_text} | Cal mode: {calibration_text}", (230, 230, 230)),
+                    ("q quit | c closed mouth | [ ] tune | o overlay | m smile fallback", (230, 230, 230)),
+                ]
+                if click_prompt:
+                    overlay_lines.insert(0, (click_prompt, (0, 220, 255)))
                 draw_overlay(
                     frame,
-                    [
-                        (f"FPS: {fps:.1f}", (255, 255, 255)),
-                        (f"Face: {'yes' if face_detected else 'no'}", (80, 255, 80) if face_detected else (0, 80, 255)),
-                        (f"Landmark: {'yes' if landmark_detected else 'no'}", (80, 255, 80) if landmark_detected else (0, 80, 255)),
-                        (f"YuNet: {yunet_ms:.1f} ms", (230, 230, 230)),
-                        (f"Landmark ms: {landmark_ms:.1f}", (230, 230, 230)),
-                        (f"Total ms: {total_stage_ms:.1f}", (230, 230, 230)),
-                        (f"Move: {move_text}", (0, 220, 255)),
-                        (f"Jump mode: {args.jump_mode}", (230, 230, 230)),
-                        (f"Jump: {jump_text}", (80, 255, 80)),
-                        (f"Mouth ratio: {mouth_ratio:.3f}", (255, 220, 80)),
-                        (f"Threshold: {threshold_text}", (230, 230, 230)),
-                        (f"Bonus: {bonus_text}", (255, 220, 80)),
-                        (f"Neutral closed-mouth: {neutral_ready_text}", (230, 230, 230)),
-                        (f"Cal mode: {calibration_text}", (230, 230, 230)),
-                        ("q quit | c closed mouth | [ ] tune | o overlay | m smile fallback", (230, 230, 230)),
-                    ],
+                    overlay_lines,
                     current_face,
                 )
                 cv2.imshow(WINDOW_NAME, frame)
             elif loop_started_at - last_report_at >= SUMMARY_INTERVAL_SECONDS:
                 print(
-                    f"fps={fps:5.1f} yunet_ms={yunet_ms:5.1f} landmark_ms={landmark_ms:5.1f} total_ms={total_stage_ms:5.1f} "
-                    f"face={'yes' if face_detected else 'no'} landmark={'yes' if landmark_detected else 'no'} "
-                    f"move={move_text:<11} jump_mode={args.jump_mode:<20} jump={jump_text:<8} "
-                    f"mouth_ratio={mouth_ratio:.3f} threshold={threshold_text} neutral={neutral_ready_text} bonus={bonus_text}"
+                    f"keyboard={keyboard.status_text():<24} last_key={keyboard.last_event():<12} "
+                    f"move={move_text:<5} jump={jump_text:<8} bonus={bonus_text:<12} "
+                    f"jump_mode={args.jump_mode:<20} mouth_ratio={mouth_ratio:.3f} threshold={threshold_text} "
+                    f"face={'yes' if face_detected else 'no'} landmark={'yes' if landmark_detected else 'no'}"
                 )
+                if click_prompt:
+                    print(click_prompt)
                 last_report_at = loop_started_at
 
             key = poll_runtime_key(overlay_enabled)
