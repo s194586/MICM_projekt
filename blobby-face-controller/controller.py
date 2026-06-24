@@ -36,8 +36,10 @@ DEFAULT_OVERLAY_ENABLED = True
 
 MOVE_ENTER_THRESHOLD = 0.075
 MOVE_EXIT_THRESHOLD = 0.035
-JUMP_ENTER_THRESHOLD = 0.35
-JUMP_EXIT_THRESHOLD = 0.20
+MOUTH_ENTER_DELTA = 0.035
+MOUTH_EXIT_DELTA = 0.020
+MOUTH_ABSOLUTE_MIN_ENTER = 0.070
+MOUTH_EMA_ALPHA = 0.55
 SUMMARY_INTERVAL_SECONDS = 2.0
 
 
@@ -45,6 +47,12 @@ def _ewma(previous: float, current: float, alpha: float = 0.18) -> float:
     if previous <= 0.0:
         return current
     return previous + alpha * (current - previous)
+
+
+def compute_jump_thresholds(closed_mouth_baseline: float) -> tuple[float, float]:
+    enter_threshold = max(closed_mouth_baseline + MOUTH_ENTER_DELTA, MOUTH_ABSOLUTE_MIN_ENTER)
+    exit_threshold = closed_mouth_baseline + MOUTH_EXIT_DELTA
+    return enter_threshold, exit_threshold
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -144,7 +152,8 @@ def main() -> int:
 
     keyboard = KeyboardController(preferred_backend=args.keyboard)
     neutral_calibrator = NeutralCalibrator(duration_seconds=DEFAULT_CALIBRATION_SECONDS)
-    jump_hold = HysteresisHold(JUMP_ENTER_THRESHOLD, JUMP_EXIT_THRESHOLD)
+    default_enter, default_exit = compute_jump_thresholds(0.0)
+    jump_hold = HysteresisHold(default_enter, default_exit)
 
     neutral_calibration = None
     calibration_mode = "neutral"
@@ -152,6 +161,8 @@ def main() -> int:
     jump_state = False
     face_detected = False
     mouth_ratio = 0.0
+    mouth_ratio_smoothed = 0.0
+    jump_threshold = default_enter
     last_sequence = -1
     last_report_at = 0.0
     fps = 0.0
@@ -203,8 +214,9 @@ def main() -> int:
             landmark_result = landmark_detector.detect(frame, detected_face) if face_detected else None
             tracking_ready = detected_face is not None and landmark_result is not None
 
-            jump_state = False
             mouth_ratio = 0.0
+            jump_state = False
+            jump_threshold = jump_hold.enter_threshold
 
             if tracking_ready:
                 if calibration_mode == "neutral":
@@ -214,7 +226,13 @@ def main() -> int:
                         neutral_calibration = neutral_calibrator.finalize()
                         calibration_mode = None
                         if neutral_calibration is not None:
+                            jump_enter_threshold, jump_exit_threshold = compute_jump_thresholds(neutral_calibration.mouth_landmark_ratio)
+                            jump_hold.set_thresholds(jump_enter_threshold, jump_exit_threshold)
+                            jump_threshold = jump_enter_threshold
+                            mouth_ratio_smoothed = neutral_calibration.mouth_landmark_ratio
                             print("Neutral closed-mouth calibration captured.")
+                    else:
+                        mouth_ratio_smoothed = 0.0
                     reset_runtime_state(jump_hold, keyboard)
                 elif neutral_calibration is not None:
                     signals = compute_live_signals(
@@ -229,19 +247,25 @@ def main() -> int:
                         enter_threshold=MOVE_ENTER_THRESHOLD,
                         exit_threshold=MOVE_EXIT_THRESHOLD,
                     )
-                    jump_state = jump_hold.update(signals.mouth_landmark_score)
                     mouth_ratio = signals.mouth_landmark_ratio
+                    mouth_ratio_smoothed = _ewma(mouth_ratio_smoothed, mouth_ratio, alpha=MOUTH_EMA_ALPHA)
+                    jump_threshold = jump_hold.enter_threshold
 
                     if input_enabled:
+                        jump_state = jump_hold.update(mouth_ratio_smoothed)
                         keyboard.set_movement(current_move, args.left_key, args.right_key)
                         keyboard.set_hold(args.jump_key, jump_state)
                     else:
+                        current_move = IDLE
+                        jump_state = False
                         keyboard.release_all()
                 else:
                     current_move = IDLE
+                    mouth_ratio_smoothed = 0.0
                     reset_runtime_state(jump_hold, keyboard)
             else:
                 current_move = IDLE
+                mouth_ratio_smoothed = 0.0
                 reset_runtime_state(jump_hold, keyboard)
 
             loop_finished_at = time.perf_counter()
@@ -256,6 +280,7 @@ def main() -> int:
                     (f"Move: {current_move}", (0, 220, 255)),
                     (f"Jump: {jump_text}", (80, 255, 80)),
                     (f"Mouth ratio: {mouth_ratio:.3f}", (255, 220, 80)),
+                    (f"J thr: {jump_threshold:.3f}", (230, 230, 230)),
                     (f"Keyboard: {keyboard.status_text()}", (230, 230, 230)),
                     (f"Last key event: {keyboard.last_event()}", (255, 220, 80)),
                     ("q quit | c recalibrate | o overlay", (230, 230, 230)),

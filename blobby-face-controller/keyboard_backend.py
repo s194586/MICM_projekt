@@ -21,8 +21,9 @@ KEYEVENTF_KEYUP = 0x0002
 KEYEVENTF_SCANCODE = 0x0008
 KEYEVENTF_EXTENDEDKEY = 0x0001
 INPUT_KEYBOARD = 1
-MAPVK_VK_TO_VSC = 0
-ULONG_PTR = ctypes.c_ulonglong if ctypes.sizeof(ctypes.c_void_p) == 8 else ctypes.c_ulong
+INPUT_MOUSE = 0
+INPUT_HARDWARE = 2
+ULONG_PTR = wintypes.WPARAM
 
 PYNPUT_SPECIAL_KEYS = {
     "space": "space",
@@ -35,21 +36,32 @@ PYNPUT_SPECIAL_KEYS = {
 
 @dataclass(frozen=True, slots=True)
 class KeySpec:
-    vk_code: int
+    scan_code: int
     display_name: str
     extended: bool = False
 
 
 KEY_SPECS = {
-    "a": KeySpec(0x41, "A"),
-    "d": KeySpec(0x44, "D"),
-    "w": KeySpec(0x57, "W"),
-    "space": KeySpec(0x20, "SPACE"),
-    "left": KeySpec(0x25, "LEFT", extended=True),
-    "right": KeySpec(0x27, "RIGHT", extended=True),
-    "up": KeySpec(0x26, "UP", extended=True),
-    "down": KeySpec(0x28, "DOWN", extended=True),
+    "a": KeySpec(0x1E, "A"),
+    "d": KeySpec(0x20, "D"),
+    "w": KeySpec(0x11, "W"),
+    "space": KeySpec(0x39, "SPACE"),
+    "left": KeySpec(0x4B, "LEFT", extended=True),
+    "right": KeySpec(0x4D, "RIGHT", extended=True),
+    "up": KeySpec(0x48, "UP", extended=True),
+    "down": KeySpec(0x50, "DOWN", extended=True),
 }
+
+
+class MOUSEINPUT(ctypes.Structure):
+    _fields_ = [
+        ("dx", wintypes.LONG),
+        ("dy", wintypes.LONG),
+        ("mouseData", wintypes.DWORD),
+        ("dwFlags", wintypes.DWORD),
+        ("time", wintypes.DWORD),
+        ("dwExtraInfo", ULONG_PTR),
+    ]
 
 
 class KEYBDINPUT(ctypes.Structure):
@@ -62,11 +74,24 @@ class KEYBDINPUT(ctypes.Structure):
     ]
 
 
+class HARDWAREINPUT(ctypes.Structure):
+    _fields_ = [
+        ("uMsg", wintypes.DWORD),
+        ("wParamL", wintypes.WORD),
+        ("wParamH", wintypes.WORD),
+    ]
+
+
 class INPUTUNION(ctypes.Union):
-    _fields_ = [("ki", KEYBDINPUT)]
+    _fields_ = [
+        ("mi", MOUSEINPUT),
+        ("ki", KEYBDINPUT),
+        ("hi", HARDWAREINPUT),
+    ]
 
 
 class INPUT(ctypes.Structure):
+    _anonymous_ = ("union",)
     _fields_ = [("type", wintypes.DWORD), ("union", INPUTUNION)]
 
 
@@ -85,9 +110,6 @@ class Win32KeyboardBackend:
         self._send_input = self._user32.SendInput
         self._send_input.argtypes = (wintypes.UINT, ctypes.POINTER(INPUT), ctypes.c_int)
         self._send_input.restype = wintypes.UINT
-        self._map_virtual_key = self._user32.MapVirtualKeyW
-        self._map_virtual_key.argtypes = (wintypes.UINT, wintypes.UINT)
-        self._map_virtual_key.restype = wintypes.UINT
         self.status = BackendStatus(name="win32", enabled=True, error="")
 
     def press(self, key_name: str) -> None:
@@ -107,19 +129,13 @@ class Win32KeyboardBackend:
             self.status.error = f"Unsupported win32 key: {key_name}"
             return
 
-        scan_code = self._map_virtual_key(key_spec.vk_code, MAPVK_VK_TO_VSC)
-        if scan_code == 0:
-            self.status.enabled = False
-            self.status.error = f"Cannot map scan code for: {key_name}"
-            return
-
         flags = KEYEVENTF_SCANCODE
         if key_spec.extended:
             flags |= KEYEVENTF_EXTENDEDKEY
         if is_key_up:
             flags |= KEYEVENTF_KEYUP
 
-        event = INPUT(type=INPUT_KEYBOARD, union=INPUTUNION(ki=KEYBDINPUT(0, scan_code, flags, 0, 0)))
+        event = INPUT(type=INPUT_KEYBOARD, ki=KEYBDINPUT(0, key_spec.scan_code, flags, 0, 0))
         sent = self._send_input(1, ctypes.byref(event), ctypes.sizeof(INPUT))
         if sent != 1:
             self.status.enabled = False
@@ -176,16 +192,21 @@ class KeyboardController:
     """Stateful hold/tap helper for low-latency output."""
 
     def __init__(self, preferred_backend: str = "win32") -> None:
-        self._backend = self._build_backend(preferred_backend)
+        self._preferred_backend = preferred_backend.strip().lower()
+        self._fallback_active = False
+        self._failover_warned = False
+        self._backend = self._build_backend(self._preferred_backend)
         self._held_keys: set[str] = set()
         self._pending_taps: dict[str, float] = {}
         self._last_event = "NONE"
 
     def press(self, key_name: str) -> None:
         self._backend.press(key_name)
+        self._recover_backend_if_needed()
 
     def release(self, key_name: str) -> None:
         self._backend.release(key_name)
+        self._recover_backend_if_needed()
 
     def hold(self, key_name: str) -> None:
         if key_name not in self._held_keys:
@@ -243,6 +264,8 @@ class KeyboardController:
 
     def status_text(self) -> str:
         if self._backend.status.enabled:
+            if self._fallback_active:
+                return "pynput fallback"
             return self._backend.status.name
         if self._backend.status.error:
             return f"{self._backend.status.name} disabled: {self._backend.status.error[:48]}"
@@ -262,22 +285,43 @@ class KeyboardController:
 
     def _build_backend(self, preferred_backend: str):
         normalized = preferred_backend.strip().lower()
-        backends = []
 
         if normalized == "win32":
             try:
                 backend = Win32KeyboardBackend()
                 if backend.status.enabled:
                     return backend
-                backends.append(backend)
             except Exception as exc:  # pragma: no cover - platform dependent.
-                backends.append(type("FallbackStatus", (), {"status": BackendStatus("win32", False, str(exc))})())
-        if normalized in ("win32", "pynput"):
+                backend = type("FallbackStatus", (), {"status": BackendStatus("win32", False, str(exc))})()
+            fallback = PynputKeyboardBackend()
+            if fallback.status.enabled:
+                self._fallback_active = True
+                return fallback
+            return backend
+
+        if normalized == "pynput":
             backend = PynputKeyboardBackend()
             if backend.status.enabled:
                 return backend
-            backends.append(backend)
+            return backend
 
-        if backends:
-            return backends[-1]
         return PynputKeyboardBackend()
+
+    def _recover_backend_if_needed(self) -> None:
+        if self._backend.status.enabled:
+            return
+        if self._preferred_backend != "win32":
+            return
+        if self._fallback_active:
+            return
+
+        fallback = PynputKeyboardBackend()
+        if not fallback.status.enabled:
+            return
+
+        error_message = self._backend.status.error or "unknown win32 error"
+        self._backend = fallback
+        self._fallback_active = True
+        if not self._failover_warned:
+            print(f"Win32 keyboard failed, switching to pynput fallback: {error_message}")
+            self._failover_warned = True
