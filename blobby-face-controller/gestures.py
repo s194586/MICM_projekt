@@ -10,10 +10,12 @@ import cv2
 import numpy as np
 
 from detector import DetectedFace
+from landmark_detector import LandmarkDetectionResult
 
 
 MOUTH_OPEN_NORMALIZER = 0.10
 VERTICAL_HEAD_NORMALIZER = 0.10
+MOUTH_LANDMARK_NORMALIZER_FLOOR = 0.08
 
 
 def clamp(value: float, lower: float, upper: float) -> float:
@@ -36,6 +38,7 @@ class FaceMetrics:
     nose_y_ratio: float
     mouth_open_score: float
     smile_raw: float
+    mouth_landmark_ratio: float
 
 
 @dataclass(slots=True)
@@ -48,6 +51,7 @@ class NeutralCalibration:
     nose_y_ratio: float
     mouth_open_score: float
     smile_raw: float
+    mouth_landmark_ratio: float
 
 
 @dataclass(slots=True)
@@ -65,6 +69,8 @@ class LiveSignals:
     bonus: float
     smile_raw: float
     smile_norm: float
+    mouth_landmark_ratio: float
+    mouth_landmark_score: float
 
 
 def mouth_roi_bounds(face: DetectedFace, frame_shape: tuple[int, ...]) -> tuple[int, int, int, int] | None:
@@ -120,7 +126,25 @@ def smile_raw_score(face: DetectedFace) -> float:
     return float(mouth_width / max(face.width, 1.0))
 
 
-def metrics_from_face(face: DetectedFace, frame_bgr: np.ndarray) -> FaceMetrics:
+def mouth_landmark_ratio_from_result(landmark_result: LandmarkDetectionResult | None) -> float:
+    if landmark_result is None or landmark_result.point_count < 68:
+        return 0.0
+
+    points = landmark_result.points
+    numerator = (
+        distance(points[61], points[67]) +
+        distance(points[62], points[66]) +
+        distance(points[63], points[65])
+    )
+    denominator = 2.0 * max(distance(points[60], points[64]), 1e-6)
+    return float(numerator / denominator)
+
+
+def metrics_from_face(
+    face: DetectedFace,
+    frame_bgr: np.ndarray,
+    landmark_result: LandmarkDetectionResult | None = None,
+) -> FaceMetrics:
     face_width = max(face.width, 1.0)
     face_height = max(face.height, 1.0)
     center_x = face.center_x
@@ -142,6 +166,7 @@ def metrics_from_face(face: DetectedFace, frame_bgr: np.ndarray) -> FaceMetrics:
         nose_y_ratio=float(nose_y_ratio),
         mouth_open_score=mouth_open_score(frame_bgr, face),
         smile_raw=smile_raw_score(face),
+        mouth_landmark_ratio=mouth_landmark_ratio_from_result(landmark_result),
     )
 
 
@@ -156,8 +181,13 @@ class NeutralCalibrator:
         self.started_at = time.perf_counter() if now is None else now
         self._metrics: list[FaceMetrics] = []
 
-    def add_sample(self, face: DetectedFace, frame_bgr: np.ndarray) -> None:
-        self._metrics.append(metrics_from_face(face, frame_bgr))
+    def add_sample(
+        self,
+        face: DetectedFace,
+        frame_bgr: np.ndarray,
+        landmark_result: LandmarkDetectionResult | None = None,
+    ) -> None:
+        self._metrics.append(metrics_from_face(face, frame_bgr, landmark_result))
 
     def is_ready(self, now: float) -> bool:
         return len(self._metrics) >= 8 and (now - self.started_at) >= self.duration_seconds
@@ -175,6 +205,7 @@ class NeutralCalibrator:
             nose_y_ratio=float(np.mean([item.nose_y_ratio for item in self._metrics])),
             mouth_open_score=float(np.mean([item.mouth_open_score for item in self._metrics])),
             smile_raw=float(np.mean([item.smile_raw for item in self._metrics])),
+            mouth_landmark_ratio=float(np.mean([item.mouth_landmark_ratio for item in self._metrics])),
         )
 
 
@@ -250,6 +281,11 @@ def smile_norm_from_metrics(
     return clamp(float(normalized), 0.0, 1.5)
 
 
+def mouth_landmark_score_from_metrics(metrics: FaceMetrics, neutral: NeutralCalibration) -> float:
+    baseline = max(neutral.mouth_landmark_ratio, MOUTH_LANDMARK_NORMALIZER_FLOOR)
+    return max(0.0, float((metrics.mouth_landmark_ratio - neutral.mouth_landmark_ratio) / baseline))
+
+
 def vertical_head_signal_from_metrics(metrics: FaceMetrics, neutral: NeutralCalibration) -> float:
     nose_component = neutral.nose_y_ratio - metrics.nose_y_ratio
     center_component = (neutral.center_y - metrics.center_y) / max(neutral.face_height, 1.0)
@@ -270,9 +306,10 @@ def compute_live_signals(
     frame_bgr: np.ndarray,
     face: DetectedFace,
     neutral: NeutralCalibration,
-    smile_calibration: SmileCalibration | None,
+    smile_calibration: SmileCalibration | None = None,
+    landmark_result: LandmarkDetectionResult | None = None,
 ) -> LiveSignals:
-    metrics = metrics_from_face(face, frame_bgr)
+    metrics = metrics_from_face(face, frame_bgr, landmark_result)
     mouth_open_signal = mouth_open_signal_from_metrics(metrics, neutral)
     vertical_head_signal = vertical_head_signal_from_metrics(metrics, neutral)
     return LiveSignals(
@@ -284,18 +321,22 @@ def compute_live_signals(
         bonus=bonus_signal_from_metrics(metrics, neutral),
         smile_raw=metrics.smile_raw,
         smile_norm=smile_norm_from_metrics(metrics, neutral, smile_calibration),
+        mouth_landmark_ratio=metrics.mouth_landmark_ratio,
+        mouth_landmark_score=mouth_landmark_score_from_metrics(metrics, neutral),
     )
 
 
 def select_jump_signal(signals: LiveSignals, jump_mode: str) -> float:
     selected = jump_mode.strip().lower()
+    if selected == "mouth_landmarks":
+        return signals.mouth_landmark_score
     if selected == "calibrated_smile":
         return signals.smile_norm
     if selected == "mouth_open":
         return signals.mouth_open_norm
     if selected == "smile_or_mouth_open":
         return max(signals.smile_norm, signals.mouth_open_norm)
-    if selected == "vertical_head":
+    if selected in ("vertical_head", "vertical_head_up"):
         return signals.vertical_head_norm
     raise ValueError(f"Unsupported jump mode: {jump_mode}")
 

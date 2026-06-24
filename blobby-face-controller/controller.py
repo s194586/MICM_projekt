@@ -17,6 +17,7 @@ from capture import LatestFrameCamera
 from detector import DEFAULT_YUNET_MODEL, create_face_detector
 from gestures import CooldownTap, HysteresisHold, NeutralCalibrator, SmileCalibrator, clamp, compute_live_signals, movement_from_signal, select_jump_signal
 from keyboard_backend import KeyboardController
+from landmark_detector import DEFAULT_LANDMARK_MODEL, LandmarkDetectionResult, create_landmark_detector
 
 
 LEFT = "LEFT"
@@ -32,12 +33,12 @@ DEFAULT_DETECTOR = "yunet"
 DEFAULT_KEYBOARD_BACKEND = "win32"
 DEFAULT_OVERLAY = True
 DEFAULT_CALIBRATION_SECONDS = 1.2
-DEFAULT_JUMP_MODE = "calibrated_smile"
+DEFAULT_JUMP_MODE = "mouth_landmarks"
 
 DEFAULT_MOVE_ENTER_THRESHOLD = 0.075
 DEFAULT_MOVE_EXIT_THRESHOLD = 0.035
-DEFAULT_JUMP_ENTER_THRESHOLD = 0.55
-DEFAULT_JUMP_EXIT_THRESHOLD = 0.35
+DEFAULT_JUMP_ENTER_THRESHOLD = 0.35
+DEFAULT_JUMP_EXIT_THRESHOLD = 0.20
 DEFAULT_JUMP_THRESHOLD_STEP = 0.05
 
 DEFAULT_BONUS_ENTER_THRESHOLD = 0.065
@@ -50,6 +51,8 @@ MOVE_LEFT_KEY = "a"
 MOVE_RIGHT_KEY = "d"
 JUMP_KEY = "w"
 BONUS_KEY = "space"
+LANDMARK_REQUIRED_MODES = {"mouth_landmarks"}
+SMILE_CALIBRATION_MODES = {"calibrated_smile", "smile_or_mouth_open"}
 
 
 def _ewma(previous: float, current: float, alpha: float = 0.18) -> float:
@@ -69,11 +72,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--keyboard", choices=("win32", "pynput"), default=DEFAULT_KEYBOARD_BACKEND)
     parser.add_argument(
         "--jump-mode",
-        choices=("calibrated_smile", "mouth_open", "smile_or_mouth_open", "vertical_head"),
+        choices=("mouth_landmarks", "calibrated_smile", "mouth_open", "smile_or_mouth_open", "vertical_head_up"),
         default=DEFAULT_JUMP_MODE,
     )
     parser.add_argument("--jump-enter", type=float, default=DEFAULT_JUMP_ENTER_THRESHOLD)
     parser.add_argument("--jump-exit", type=float, default=DEFAULT_JUMP_EXIT_THRESHOLD)
+    parser.add_argument("--landmark-model-path", type=Path, default=DEFAULT_LANDMARK_MODEL)
+    parser.add_argument("--debug-landmarks", action="store_true")
     parser.add_argument("--no-overlay", action="store_true")
     parser.add_argument("--model-path", type=Path, default=DEFAULT_YUNET_MODEL)
     return parser
@@ -91,6 +96,13 @@ def draw_overlay(frame, lines: list[tuple[str, tuple[int, int, int]]], face) -> 
     for text, color in lines:
         cv2.putText(frame, text, (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.50, color, 1, cv2.LINE_AA)
         y += 18
+
+
+def draw_debug_landmarks(frame, landmark_result: LandmarkDetectionResult | None) -> None:
+    if landmark_result is None:
+        return
+    for point in landmark_result.mouth_points:
+        cv2.circle(frame, (int(round(point[0])), int(round(point[1]))), 1, (255, 180, 0), -1)
 
 
 def hide_overlay_window() -> None:
@@ -150,9 +162,9 @@ def adjust_jump_thresholds(
     jump_exit_threshold: float,
     delta: float,
 ) -> tuple[float, float]:
-    gap = max(0.05, jump_enter_threshold - jump_exit_threshold)
-    jump_enter_threshold = clamp(jump_enter_threshold + delta, 0.10, 1.40)
-    jump_exit_threshold = clamp(jump_enter_threshold - gap, 0.05, jump_enter_threshold - 0.02)
+    gap = max(0.03, jump_enter_threshold - jump_exit_threshold)
+    jump_enter_threshold = clamp(jump_enter_threshold + delta, 0.05, 1.40)
+    jump_exit_threshold = clamp(jump_enter_threshold - gap, 0.02, jump_enter_threshold - 0.01)
     jump_hold.set_thresholds(jump_enter_threshold, jump_exit_threshold)
     return jump_enter_threshold, jump_exit_threshold
 
@@ -172,6 +184,15 @@ def main() -> int:
         print(f"ERROR: {exc}")
         print(f"Expected YuNet model path: {args.model_path}")
         return 1
+
+    landmark_detector = None
+    if args.jump_mode in LANDMARK_REQUIRED_MODES or args.debug_landmarks:
+        try:
+            landmark_detector = create_landmark_detector(args.landmark_model_path)
+        except Exception as exc:
+            print(f"ERROR: {exc}")
+            print(f"Missing landmark model. Download/place it here: {args.landmark_model_path}")
+            return 1
 
     camera = LatestFrameCamera(
         camera_index=args.camera_index,
@@ -203,21 +224,28 @@ def main() -> int:
     fps = 0.0
     latency_ms = 0.0
     capture_ms = 0.0
-    inference_ms = 0.0
-    processing_ms = 0.0
+    yunet_ms = 0.0
+    landmark_ms = 0.0
+    total_stage_ms = 0.0
 
     smile_raw = 0.0
     smile_norm = 0.0
     mouth_open_norm = 0.0
+    mouth_ratio = 0.0
+    landmark_detected = False
 
     print(
         f"Controller started | capture={camera.backend_name} | detector={detector.backend_name} "
         f"| jump={args.jump_mode} | keyboard={keyboard.status_text()}"
     )
     print(f"YuNet model path: {args.model_path}")
-    print("Keep a neutral face for the first 1-2 seconds. Then press m and smile wide for 1-2 seconds.")
+    if landmark_detector is not None:
+        print(f"Landmark model path: {args.landmark_model_path} | backend={landmark_detector.backend_name}")
+    print("Keep a neutral face with closed mouth for the first 1-2 seconds, or press c later to recalibrate.")
+    if args.jump_mode in SMILE_CALIBRATION_MODES:
+        print("Smile fallback is available, but not required for gameplay. Use m only if you want calibrated_smile.")
     if not overlay_enabled:
-        print("Overlay disabled. Use q/c/m/o/[ / ] in the console, or Ctrl+C to stop.")
+        print("Overlay disabled. Use q/c/[ / ]/o in the console, or Ctrl+C to stop.")
 
     try:
         while True:
@@ -242,9 +270,25 @@ def main() -> int:
             latency_ms = _ewma(latency_ms, max(0.0, (loop_started_at - frame_timestamp) * 1000.0))
 
             frame = cv2.flip(frame, 1)
-            current_face, raw_inference_ms = detector.detect(frame)
-            inference_ms = _ewma(inference_ms, raw_inference_ms)
+            stage_started_at = time.perf_counter()
+            current_face, raw_yunet_ms = detector.detect(frame)
+            yunet_ms = _ewma(yunet_ms, raw_yunet_ms)
             face_detected = current_face is not None
+
+            current_landmarks = None
+            raw_landmark_ms = 0.0
+            if face_detected and landmark_detector is not None:
+                current_landmarks = landmark_detector.detect(frame, current_face)
+                if current_landmarks is not None:
+                    landmark_detected = True
+                    raw_landmark_ms = current_landmarks.inference_ms
+                else:
+                    landmark_detected = False
+            else:
+                landmark_detected = False
+
+            landmark_ms = _ewma(landmark_ms, raw_landmark_ms)
+            total_stage_ms = _ewma(total_stage_ms, (time.perf_counter() - stage_started_at) * 1000.0)
 
             processing_started_at = time.perf_counter()
             move_text = IDLE
@@ -254,16 +298,16 @@ def main() -> int:
             smile_raw = 0.0
             smile_norm = 0.0
             mouth_open_norm = 0.0
+            mouth_ratio = 0.0
 
             if face_detected:
                 if calibration_mode == "neutral":
-                    neutral_calibrator.add_sample(current_face, frame)
+                    neutral_calibrator.add_sample(current_face, frame, current_landmarks)
                     if neutral_calibrator.is_ready(loop_started_at):
                         neutral_calibration = neutral_calibrator.finalize()
                         calibration_mode = None
-                        smile_calibration = None
                         if neutral_calibration is not None:
-                            print("Neutral calibration captured. Press m and smile wide to calibrate jump.")
+                            print("Neutral closed-mouth calibration captured.")
                     current_move = IDLE
                     jump_state = False
                     reset_runtime_state(jump_hold, bonus_tap, keyboard)
@@ -278,7 +322,13 @@ def main() -> int:
                     jump_state = False
                     reset_runtime_state(jump_hold, bonus_tap, keyboard)
                 elif neutral_calibration is not None:
-                    signals = compute_live_signals(frame, current_face, neutral_calibration, smile_calibration)
+                    signals = compute_live_signals(
+                        frame,
+                        current_face,
+                        neutral_calibration,
+                        smile_calibration,
+                        current_landmarks,
+                    )
                     current_move = movement_from_signal(
                         signals.movement,
                         current_move,
@@ -290,6 +340,7 @@ def main() -> int:
                     smile_raw = signals.smile_raw
                     smile_norm = signals.smile_norm
                     mouth_open_norm = signals.mouth_open_norm
+                    mouth_ratio = signals.mouth_landmark_ratio
                     jump_state = jump_hold.update(select_jump_signal(signals, args.jump_mode))
                     keyboard.set_hold(JUMP_KEY, jump_state)
 
@@ -308,6 +359,7 @@ def main() -> int:
                 smile_raw = 0.0
                 smile_norm = 0.0
                 mouth_open_norm = 0.0
+                mouth_ratio = 0.0
                 reset_runtime_state(jump_hold, bonus_tap, keyboard)
 
             cooldown_left = bonus_tap.cooldown_left(loop_started_at)
@@ -316,47 +368,42 @@ def main() -> int:
             jump_text = "HELD" if jump_state else "RELEASED"
 
             processing_finished_at = time.perf_counter()
-            processing_ms = _ewma(processing_ms, (processing_finished_at - processing_started_at) * 1000.0)
             fps = _ewma(fps, 1.0 / max(processing_finished_at - loop_started_at, 1e-6))
 
-            neutral_smile_baseline = 0.0 if neutral_calibration is None else neutral_calibration.smile_raw
-            smile_baseline = 0.0 if smile_calibration is None else smile_calibration.smile_raw
+            threshold_text = f"{jump_enter_threshold:.2f}/{jump_exit_threshold:.2f}"
             neutral_ready_text = "yes" if neutral_calibration is not None else "no"
-            smile_ready_text = "yes" if smile_calibration is not None else "no"
 
             if overlay_enabled:
+                if args.debug_landmarks:
+                    draw_debug_landmarks(frame, current_landmarks)
                 draw_overlay(
                     frame,
                     [
                         (f"FPS: {fps:.1f}", (255, 255, 255)),
-                        (f"Detector: {detector.backend_name}", (230, 230, 230)),
-                        (f"Inference: {inference_ms:.1f} ms", (230, 230, 230)),
                         (f"Face: {'yes' if face_detected else 'no'}", (80, 255, 80) if face_detected else (0, 80, 255)),
+                        (f"Landmark: {'yes' if landmark_detected else 'no'}", (80, 255, 80) if landmark_detected else (0, 80, 255)),
+                        (f"YuNet: {yunet_ms:.1f} ms", (230, 230, 230)),
+                        (f"Landmark ms: {landmark_ms:.1f}", (230, 230, 230)),
+                        (f"Total ms: {total_stage_ms:.1f}", (230, 230, 230)),
                         (f"Move: {move_text}", (0, 220, 255)),
                         (f"Jump mode: {args.jump_mode}", (230, 230, 230)),
                         (f"Jump: {jump_text}", (80, 255, 80)),
-                        (f"Smile raw: {smile_raw:.3f}", (255, 220, 80)),
-                        (f"Neutral smile: {neutral_smile_baseline:.3f}", (255, 220, 80)),
-                        (f"Smile baseline: {smile_baseline:.3f}", (255, 220, 80)),
-                        (f"Smile norm: {smile_norm:.3f}", (255, 220, 80)),
-                        (f"Mouth norm: {mouth_open_norm:.3f}", (255, 220, 80)),
-                        (f"Enter: {jump_enter_threshold:.2f} | Exit: {jump_exit_threshold:.2f}", (230, 230, 230)),
-                        (f"Neutral calibrated: {neutral_ready_text}", (230, 230, 230)),
-                        (f"Smile calibrated: {smile_ready_text}", (230, 230, 230)),
+                        (f"Mouth ratio: {mouth_ratio:.3f}", (255, 220, 80)),
+                        (f"Threshold: {threshold_text}", (230, 230, 230)),
                         (f"Bonus: {bonus_text}", (255, 220, 80)),
+                        (f"Neutral closed-mouth: {neutral_ready_text}", (230, 230, 230)),
                         (f"Cal mode: {calibration_text}", (230, 230, 230)),
-                        ("q quit | c neutral | m smile | [ ] tune | o overlay", (230, 230, 230)),
+                        ("q quit | c closed mouth | [ ] tune | o overlay | m smile fallback", (230, 230, 230)),
                     ],
                     current_face,
                 )
                 cv2.imshow(WINDOW_NAME, frame)
             elif loop_started_at - last_report_at >= SUMMARY_INTERVAL_SECONDS:
                 print(
-                    f"fps={fps:5.1f} infer_ms={inference_ms:5.1f} latency_ms={latency_ms:5.1f} "
-                    f"face={'yes' if face_detected else 'no'} move={move_text:<11} jump_mode={args.jump_mode:<20} "
-                    f"jump={jump_text:<8} smile_raw={smile_raw:.3f} neutral_smile={neutral_smile_baseline:.3f} "
-                    f"smile_base={smile_baseline:.3f} smile_norm={smile_norm:.3f} enter={jump_enter_threshold:.2f} "
-                    f"exit={jump_exit_threshold:.2f} neutral={neutral_ready_text} smile={smile_ready_text}"
+                    f"fps={fps:5.1f} yunet_ms={yunet_ms:5.1f} landmark_ms={landmark_ms:5.1f} total_ms={total_stage_ms:5.1f} "
+                    f"face={'yes' if face_detected else 'no'} landmark={'yes' if landmark_detected else 'no'} "
+                    f"move={move_text:<11} jump_mode={args.jump_mode:<20} jump={jump_text:<8} "
+                    f"mouth_ratio={mouth_ratio:.3f} threshold={threshold_text} neutral={neutral_ready_text} bonus={bonus_text}"
                 )
                 last_report_at = loop_started_at
 
@@ -365,14 +412,15 @@ def main() -> int:
                 break
             if key == "c":
                 neutral_calibration = None
-                smile_calibration = None
                 calibration_mode = "neutral"
                 current_move = IDLE
                 jump_state = False
                 begin_neutral_calibration(neutral_calibrator, jump_hold, bonus_tap, keyboard, loop_started_at)
-                print("Recalibrating neutral face...")
+                print("Recalibrating neutral closed mouth...")
             if key == "m":
-                if neutral_calibration is None:
+                if args.jump_mode not in SMILE_CALIBRATION_MODES:
+                    print("Smile calibration is only used by the calibrated_smile fallback modes.")
+                elif neutral_calibration is None:
                     print("Calibrate neutral first with c or wait for startup calibration.")
                 else:
                     smile_calibration = None
@@ -380,7 +428,7 @@ def main() -> int:
                     current_move = IDLE
                     jump_state = False
                     begin_smile_calibration(smile_calibrator, jump_hold, bonus_tap, keyboard, loop_started_at)
-                    print("Calibrating smile... hold a wide smile for 1-2 seconds.")
+                    print("Calibrating smile fallback... hold a wide smile for 1-2 seconds.")
             if key == "[":
                 jump_enter_threshold, jump_exit_threshold = adjust_jump_thresholds(
                     jump_hold,
