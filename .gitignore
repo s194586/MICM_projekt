@@ -6,6 +6,7 @@ Lib/
 Scripts/
 site-packages/
 __pycache__/
+**/__pycache__/
 *.pyc
 *.pyo
 *.pyd
