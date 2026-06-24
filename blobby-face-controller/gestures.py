@@ -12,6 +12,14 @@ import numpy as np
 from detector import DetectedFace
 
 
+MOUTH_OPEN_NORMALIZER = 0.10
+VERTICAL_HEAD_NORMALIZER = 0.10
+
+
+def clamp(value: float, lower: float, upper: float) -> float:
+    return max(lower, min(upper, value))
+
+
 def distance(point_a: np.ndarray | None, point_b: np.ndarray | None) -> float:
     if point_a is None or point_b is None:
         return 0.0
@@ -27,6 +35,7 @@ class FaceMetrics:
     nose_x_ratio: float
     nose_y_ratio: float
     mouth_open_score: float
+    smile_raw: float
 
 
 @dataclass(slots=True)
@@ -38,14 +47,24 @@ class NeutralCalibration:
     nose_x_ratio: float
     nose_y_ratio: float
     mouth_open_score: float
+    smile_raw: float
+
+
+@dataclass(slots=True)
+class SmileCalibration:
+    smile_raw: float
 
 
 @dataclass(slots=True)
 class LiveSignals:
     movement: float
     mouth_open: float
+    mouth_open_norm: float
     vertical_head: float
+    vertical_head_norm: float
     bonus: float
+    smile_raw: float
+    smile_norm: float
 
 
 def mouth_roi_bounds(face: DetectedFace, frame_shape: tuple[int, ...]) -> tuple[int, int, int, int] | None:
@@ -93,6 +112,14 @@ def mouth_open_score(frame_bgr: np.ndarray, face: DetectedFace) -> float:
     return float((dark_ratio * 0.72) + (contrast_score * 0.20) + (vertical_edges * 0.08))
 
 
+def smile_raw_score(face: DetectedFace) -> float:
+    mouth_width = distance(face.left_mouth, face.right_mouth)
+    eye_distance = distance(face.left_eye, face.right_eye)
+    if eye_distance > 1.0:
+        return float(mouth_width / eye_distance)
+    return float(mouth_width / max(face.width, 1.0))
+
+
 def metrics_from_face(face: DetectedFace, frame_bgr: np.ndarray) -> FaceMetrics:
     face_width = max(face.width, 1.0)
     face_height = max(face.height, 1.0)
@@ -114,6 +141,7 @@ def metrics_from_face(face: DetectedFace, frame_bgr: np.ndarray) -> FaceMetrics:
         nose_x_ratio=float(nose_x_ratio),
         nose_y_ratio=float(nose_y_ratio),
         mouth_open_score=mouth_open_score(frame_bgr, face),
+        smile_raw=smile_raw_score(face),
     )
 
 
@@ -146,7 +174,31 @@ class NeutralCalibrator:
             nose_x_ratio=float(np.mean([item.nose_x_ratio for item in self._metrics])),
             nose_y_ratio=float(np.mean([item.nose_y_ratio for item in self._metrics])),
             mouth_open_score=float(np.mean([item.mouth_open_score for item in self._metrics])),
+            smile_raw=float(np.mean([item.smile_raw for item in self._metrics])),
         )
+
+
+class SmileCalibrator:
+    """Collect a short sequence of smile samples for calibrated jump detection."""
+
+    def __init__(self, duration_seconds: float) -> None:
+        self.duration_seconds = duration_seconds
+        self.reset()
+
+    def reset(self, now: float | None = None) -> None:
+        self.started_at = time.perf_counter() if now is None else now
+        self._smile_samples: list[float] = []
+
+    def add_sample(self, face: DetectedFace, frame_bgr: np.ndarray) -> None:
+        self._smile_samples.append(metrics_from_face(face, frame_bgr).smile_raw)
+
+    def is_ready(self, now: float) -> bool:
+        return len(self._smile_samples) >= 8 and (now - self.started_at) >= self.duration_seconds
+
+    def finalize(self) -> SmileCalibration | None:
+        if len(self._smile_samples) < 8:
+            return None
+        return SmileCalibration(smile_raw=float(np.mean(self._smile_samples)))
 
 
 def movement_signal_from_metrics(metrics: FaceMetrics, neutral: NeutralCalibration) -> float:
@@ -179,10 +231,33 @@ def mouth_open_signal_from_metrics(metrics: FaceMetrics, neutral: NeutralCalibra
     return float(metrics.mouth_open_score - neutral.mouth_open_score)
 
 
+def mouth_open_norm_from_signal(mouth_open_signal: float) -> float:
+    return clamp(mouth_open_signal / MOUTH_OPEN_NORMALIZER, 0.0, 1.5)
+
+
+def smile_norm_from_metrics(
+    metrics: FaceMetrics,
+    neutral: NeutralCalibration,
+    smile_calibration: SmileCalibration | None,
+) -> float:
+    if smile_calibration is None:
+        return 0.0
+
+    denominator = smile_calibration.smile_raw - neutral.smile_raw
+    if denominator <= 1e-6:
+        return 0.0
+    normalized = (metrics.smile_raw - neutral.smile_raw) / denominator
+    return clamp(float(normalized), 0.0, 1.5)
+
+
 def vertical_head_signal_from_metrics(metrics: FaceMetrics, neutral: NeutralCalibration) -> float:
     nose_component = neutral.nose_y_ratio - metrics.nose_y_ratio
     center_component = (neutral.center_y - metrics.center_y) / max(neutral.face_height, 1.0)
     return float((nose_component * 0.7) + (center_component * 0.3))
+
+
+def vertical_head_norm_from_signal(vertical_head_signal: float) -> float:
+    return clamp(vertical_head_signal / VERTICAL_HEAD_NORMALIZER, 0.0, 1.5)
 
 
 def bonus_signal_from_metrics(metrics: FaceMetrics, neutral: NeutralCalibration) -> float:
@@ -191,22 +266,37 @@ def bonus_signal_from_metrics(metrics: FaceMetrics, neutral: NeutralCalibration)
     return float((nose_component * 0.7) + (center_component * 0.3))
 
 
-def compute_live_signals(frame_bgr: np.ndarray, face: DetectedFace, neutral: NeutralCalibration) -> LiveSignals:
+def compute_live_signals(
+    frame_bgr: np.ndarray,
+    face: DetectedFace,
+    neutral: NeutralCalibration,
+    smile_calibration: SmileCalibration | None,
+) -> LiveSignals:
     metrics = metrics_from_face(face, frame_bgr)
+    mouth_open_signal = mouth_open_signal_from_metrics(metrics, neutral)
+    vertical_head_signal = vertical_head_signal_from_metrics(metrics, neutral)
     return LiveSignals(
         movement=movement_signal_from_metrics(metrics, neutral),
-        mouth_open=mouth_open_signal_from_metrics(metrics, neutral),
-        vertical_head=vertical_head_signal_from_metrics(metrics, neutral),
+        mouth_open=mouth_open_signal,
+        mouth_open_norm=mouth_open_norm_from_signal(mouth_open_signal),
+        vertical_head=vertical_head_signal,
+        vertical_head_norm=vertical_head_norm_from_signal(vertical_head_signal),
         bonus=bonus_signal_from_metrics(metrics, neutral),
+        smile_raw=metrics.smile_raw,
+        smile_norm=smile_norm_from_metrics(metrics, neutral, smile_calibration),
     )
 
 
 def select_jump_signal(signals: LiveSignals, jump_mode: str) -> float:
     selected = jump_mode.strip().lower()
+    if selected == "calibrated_smile":
+        return signals.smile_norm
     if selected == "mouth_open":
-        return signals.mouth_open
+        return signals.mouth_open_norm
+    if selected == "smile_or_mouth_open":
+        return max(signals.smile_norm, signals.mouth_open_norm)
     if selected == "vertical_head":
-        return signals.vertical_head
+        return signals.vertical_head_norm
     raise ValueError(f"Unsupported jump mode: {jump_mode}")
 
 
@@ -224,6 +314,10 @@ class HysteresisHold:
         else:
             self.held = score >= self.enter_threshold
         return self.held
+
+    def set_thresholds(self, enter_threshold: float, exit_threshold: float) -> None:
+        self.enter_threshold = enter_threshold
+        self.exit_threshold = exit_threshold
 
     def reset(self) -> None:
         self.held = False
